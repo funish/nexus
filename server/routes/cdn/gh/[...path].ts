@@ -4,6 +4,30 @@ import { parseTarGzip } from "nanotar";
 import { lookup } from "mrmime";
 import { useStorage } from "nitro/storage";
 
+// Check if version is a branch (not a tag or commit)
+function isBranch(version: string): boolean {
+  // Explicit branch names
+  if (["main", "master", "dev"].includes(version)) {
+    return true;
+  }
+  // Full commit hash (40 characters)
+  if (/^[a-f0-9]{40}$/.test(version)) {
+    return false;
+  }
+  // Default to treating as tag (not branch)
+  return false;
+}
+
+// Get appropriate cache-control header based on version type
+function getCacheControl(version: string, versionSpecified: boolean): string {
+  // When version not specified or is a branch - shorter cache (10 minutes)
+  if (!versionSpecified || isBranch(version)) {
+    return "public, max-age=600";
+  }
+  // Tags and commits - long cache (1 year, immutable)
+  return "public, max-age=31536000, immutable";
+}
+
 // Construct GitHub tarball URL using codeload
 async function getGitHubTarballUrl(owner: string, repo: string, version: string): Promise<string> {
   // Full commit hash (40 characters)
@@ -11,8 +35,8 @@ async function getGitHubTarballUrl(owner: string, repo: string, version: string)
     return `https://codeload.github.com/${owner}/${repo}/tar.gz/${version}`;
   }
 
-  // Special branch names
-  if (["latest", "main", "master", "dev"].includes(version)) {
+  // Explicit branch names
+  if (["main", "master", "dev"].includes(version)) {
     return `https://codeload.github.com/${owner}/${repo}/tar.gz/refs/heads/${version}`;
   }
 
@@ -21,14 +45,25 @@ async function getGitHubTarballUrl(owner: string, repo: string, version: string)
 }
 
 // Ensure all files from a GitHub repository version are cached
-async function ensureGitHubCached(owner: string, repo: string, version: string) {
+async function ensureGitHubCached(
+  owner: string,
+  repo: string,
+  version: string,
+  versionSpecified: boolean,
+) {
   const storage = useStorage("cache");
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
 
-  // Check if already cached by checking meta
-  const cachedMeta = await storage.getMeta(cacheBase);
-  if (cachedMeta?.files) {
-    return;
+  // Skip cache when version not specified or is a branch - always refetch
+  if (!versionSpecified || isBranch(version)) {
+    // Delete old cache if exists
+    await storage.removeItem(cacheBase);
+  } else {
+    // For tags/commits, check if already cached
+    const cachedMeta = await storage.getMeta(cacheBase);
+    if (cachedMeta?.files) {
+      return;
+    }
   }
 
   // Get tarball URL
@@ -135,10 +170,11 @@ export default defineHandler(async (event) => {
     });
   }
 
-  const version = repoVersion || "latest";
+  const version = repoVersion || "main";
+  const versionSpecified = !!repoVersion;
 
   // Download tarball and cache all files
-  await ensureGitHubCached(owner, repo, version);
+  await ensureGitHubCached(owner, repo, version, versionSpecified);
 
   const storage = useStorage("cache");
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
@@ -167,7 +203,7 @@ export default defineHandler(async (event) => {
         const contentType = lookup("README.md") || "text/plain";
 
         event.res.headers.set("Content-Type", contentType);
-        event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+        event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
 
         return Buffer.from(readmeData);
       }
@@ -179,7 +215,7 @@ export default defineHandler(async (event) => {
         const contentType = lookup("index.js") || "application/javascript";
 
         event.res.headers.set("Content-Type", contentType);
-        event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+        event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
 
         return Buffer.from(indexData);
       }
@@ -200,7 +236,7 @@ export default defineHandler(async (event) => {
     const contentType = lookup(filepath) || "application/octet-stream";
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
 
     return Buffer.from(fileData);
   }

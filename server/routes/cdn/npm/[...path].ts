@@ -4,15 +4,41 @@ import { parseTarGzip } from "nanotar";
 import { lookup } from "mrmime";
 import { useStorage } from "nitro/storage";
 
+// Check if version should not be cached (when version not specified)
+function isNonCacheableVersion(versionSpecified: boolean): boolean {
+  // Don't cache when user didn't specify a version
+  return !versionSpecified;
+}
+
+// Get appropriate cache-control header based on version
+function getNpmCacheControl(versionSpecified: boolean): string {
+  // When version not specified - shorter cache (10 minutes)
+  if (isNonCacheableVersion(versionSpecified)) {
+    return "public, max-age=600";
+  }
+  // Specific versions - long cache (1 year, immutable)
+  return "public, max-age=31536000, immutable";
+}
+
 // Ensure all files from a package version are cached
-async function ensurePackageCached(packageName: string, version: string, tarballUrl: string) {
+async function ensurePackageCached(
+  packageName: string,
+  version: string,
+  tarballUrl: string,
+  versionSpecified: boolean,
+) {
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
 
-  // Check if already cached by checking meta
-  const cachedMeta = await storage.getMeta(cacheBase);
-  if (cachedMeta?.files) {
-    return;
+  // Skip cache when version not specified - always refetch
+  if (isNonCacheableVersion(versionSpecified)) {
+    await storage.removeItem(cacheBase);
+  } else {
+    // For specific versions, check if already cached
+    const cachedMeta = await storage.getMeta(cacheBase);
+    if (cachedMeta?.files) {
+      return;
+    }
   }
 
   // Download and extract tarball
@@ -93,6 +119,7 @@ export default defineHandler(async (event) => {
   let packageName: string;
   let version: string;
   let filepath: string;
+  let versionSpecified: boolean;
 
   if (path.startsWith("@")) {
     // Scoped: @types/hast@latest/index.d.ts
@@ -107,6 +134,7 @@ export default defineHandler(async (event) => {
     const [, scope, pkg, pkgVersion, pkgFilepath] = match;
     packageName = `@${scope}/${pkg}`;
     version = pkgVersion || "latest";
+    versionSpecified = !!pkgVersion;
     filepath = pkgFilepath || "";
   } else {
     // Normal: uikit@latest/dist/js/uikit.js
@@ -127,6 +155,7 @@ export default defineHandler(async (event) => {
     }
     packageName = pkg;
     version = pkgVersion || "latest";
+    versionSpecified = !!pkgVersion;
     filepath = pkgFilepath || "";
   }
 
@@ -162,7 +191,7 @@ export default defineHandler(async (event) => {
 
   // Download tarball and cache all files
   const tarballUrl = versionInfo.dist.tarball;
-  await ensurePackageCached(packageName, version, tarballUrl);
+  await ensurePackageCached(packageName, version, tarballUrl, versionSpecified);
 
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
@@ -232,7 +261,7 @@ export default defineHandler(async (event) => {
       const contentType = lookup(entryFile) || "application/octet-stream";
 
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+      event.res.headers.set("Cache-Control", getNpmCacheControl(versionSpecified));
 
       return Buffer.from(fileData);
     }
@@ -246,7 +275,7 @@ export default defineHandler(async (event) => {
     const contentType = lookup(filepath) || "application/octet-stream";
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    event.res.headers.set("Cache-Control", getNpmCacheControl(versionSpecified));
 
     return Buffer.from(fileData);
   }

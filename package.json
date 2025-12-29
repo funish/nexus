@@ -1,8 +1,22 @@
 {
   "name": "nexus",
   "version": "0.0.0",
-  "description": "",
   "private": true,
+  "description": "",
+  "homepage": "https://github.com/funish/nexus#readme",
+  "bugs": {
+    "url": "https://github.com/funish/nexus/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Funish",
+    "email": "contact@funish.net",
+    "url": "https://www.funish.net/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/funish/nexus.git"
+  },
   "scripts": {
     "build": "nitro build",
     "dev": "nitro dev",
@@ -10,30 +24,15 @@
     "lint": "basis lint --all",
     "postinstall": "basis git setup"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/funish/nexus.git"
-  },
-  "author": {
-    "name": "Funish",
-    "email": "contact@funish.net",
-    "url": "https://www.funish.net/"
-  },
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/funish/nexus/issues"
-  },
-  "homepage": "https://github.com/funish/nexus#readme",
   "devDependencies": {
     "@funish/basis": "0.1.2",
-    "@prettier/plugin-oxc": "0.1.3",
     "@types/node": "25.0.3",
     "mrmime": "2.0.1",
     "nanotar": "0.2.0",
     "nitro": "3.0.1-alpha.1",
+    "oxfmt": "0.21.0",
     "oxlint": "1.36.0",
     "oxlint-tsgolint": "0.10.0",
-    "prettier": "3.7.4",
     "rolldown": "1.0.0-beta.57"
   }
 }

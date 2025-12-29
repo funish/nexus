@@ -7,8 +7,7 @@ export default defineBasisConfig({
     },
     project: {
       check: "oxlint --fix --fix-suggestions --type-aware",
-      format:
-        "prettier --write --list-different . --ignore-path .gitignore . --plugin=@prettier/plugin-oxc",
+      format: "oxfmt --write . --ignore-path .gitignore",
     },
   },
   git: {
@@ -16,6 +15,5 @@ export default defineBasisConfig({
       "pre-commit": "basis lint --staged",
       "commit-msg": "basis git --lint-commit",
     },
-    commitMsg: {},
   },
 });

@@ -5,11 +5,7 @@ import { lookup } from "mrmime";
 import { useStorage } from "nitro/storage";
 
 // Ensure all files from a package version are cached
-async function ensurePackageCached(
-  packageName: string,
-  version: string,
-  tarballUrl: string,
-) {
+async function ensurePackageCached(packageName: string, version: string, tarballUrl: string) {
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
 
@@ -188,11 +184,7 @@ export default defineHandler(async (event) => {
       };
     } else {
       // /cdn/npm/uikit -> return package.json main file
-      const packageJsonData = await getCachedFile(
-        packageName,
-        version,
-        "package.json",
-      );
+      const packageJsonData = await getCachedFile(packageName, version, "package.json");
 
       if (!packageJsonData) {
         throw new HTTPError({
@@ -224,9 +216,7 @@ export default defineHandler(async (event) => {
         } else if (packageJson.exports["."]) {
           const exportEntry = packageJson.exports["."];
           entryFile =
-            typeof exportEntry === "string"
-              ? exportEntry
-              : exportEntry.default || entryFile;
+            typeof exportEntry === "string" ? exportEntry : exportEntry.default || entryFile;
         }
       }
 
@@ -242,10 +232,7 @@ export default defineHandler(async (event) => {
       const contentType = lookup(entryFile) || "application/octet-stream";
 
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set(
-        "Cache-Control",
-        "public, max-age=31536000, immutable",
-      );
+      event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
 
       return Buffer.from(fileData);
     }
@@ -259,10 +246,7 @@ export default defineHandler(async (event) => {
     const contentType = lookup(filepath) || "application/octet-stream";
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set(
-      "Cache-Control",
-      "public, max-age=31536000, immutable",
-    );
+    event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
 
     return Buffer.from(fileData);
   }
@@ -270,9 +254,7 @@ export default defineHandler(async (event) => {
   // If file not found, try to list as directory
   const meta = await storage.getMeta(cacheBase);
   const allFiles =
-    (meta?.files as
-      | Array<{ name: string; type: string; size: number }>
-      | undefined) || [];
+    (meta?.files as Array<{ name: string; type: string; size: number }> | undefined) || [];
 
   // Filter files by directory prefix
   const dirPrefix = `${filepath}/`;
@@ -292,9 +274,7 @@ export default defineHandler(async (event) => {
     });
   }
 
-  dirContents.sort((a: { name: string }, b: { name: string }) =>
-    a.name.localeCompare(b.name),
-  );
+  dirContents.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
 
   event.res.headers.set("Content-Type", "application/json");
   event.res.headers.set("Cache-Control", "public, max-age=600");

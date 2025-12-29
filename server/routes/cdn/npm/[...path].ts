@@ -108,8 +108,109 @@ export default defineHandler(async (event) => {
   const rootDir = firstFile?.name.split("/")[0] || "package";
   const rootPath = `${rootDir}/`;
 
-  // First, try to find exact file match
-  const fullPath = filepath ? `${rootPath}${filepath}` : rootPath.slice(0, -1);
+  // Check if path ends with / (directory listing vs main file)
+  const hasTrailingSlash = path.endsWith("/");
+
+  // Special handling for package root access
+  if (!filepath) {
+    if (hasTrailingSlash) {
+      // /cdn/npm/uikit/ -> list directory contents
+      const dirContents = files
+        .filter((file) => {
+          // Exclude the directory entry itself
+          if (file.name === rootPath.slice(0, -1)) return false;
+          return true;
+        })
+        .map((file) => ({
+          name: file.name.slice(rootPath.length),
+          type: file.type,
+          size: file.size,
+        }))
+        .sort((a, b) => {
+          const aIsDir = a.type !== "file";
+          const bIsDir = b.type !== "file";
+          if (aIsDir && !bIsDir) return -1;
+          if (!aIsDir && bIsDir) return 1;
+          return a.name.localeCompare(b.name);
+        });
+
+      event.res.headers.set("Content-Type", "application/json");
+      event.res.headers.set("Cache-Control", "public, max-age=600");
+
+      return {
+        path: "",
+        type: "directory",
+        files: dirContents,
+      };
+    } else {
+      // /cdn/npm/uikit -> return package.json main file
+      const packageJsonPath = `${rootPath}package.json`;
+      const packageJsonFile = files.find(
+        (file) => file.name === packageJsonPath,
+      );
+
+      if (!packageJsonFile || !packageJsonFile.data) {
+        throw new HTTPError({
+          status: 404,
+          statusText: "package.json not found",
+        });
+      }
+
+      const packageJson = JSON.parse(
+        new TextDecoder().decode(packageJsonFile.data),
+      );
+
+      // Determine entry file following jsDelivr priority:
+      // jsdelivr > browser > main > module > exports["."] > index.js
+      let entryFile =
+        packageJson.jsdelivr ||
+        packageJson.browser ||
+        packageJson.main ||
+        packageJson.module ||
+        "index.js";
+
+      // Handle exports field (lower priority than the above fields)
+      if (
+        !packageJson.jsdelivr &&
+        !packageJson.browser &&
+        !packageJson.main &&
+        packageJson.exports
+      ) {
+        if (typeof packageJson.exports === "string") {
+          entryFile = packageJson.exports;
+        } else if (packageJson.exports["."]) {
+          const exportEntry = packageJson.exports["."];
+          entryFile =
+            typeof exportEntry === "string"
+              ? exportEntry
+              : exportEntry.default || entryFile;
+        }
+      }
+
+      const fullPath = `${rootPath}${entryFile}`;
+      const targetFile = files.find((file) => file.name === fullPath);
+
+      if (!targetFile || targetFile.type !== "file" || !targetFile.data) {
+        throw new HTTPError({
+          status: 404,
+          statusText: `Entry file not found: ${entryFile}`,
+        });
+      }
+
+      const contentType = lookup(entryFile) || "application/octet-stream";
+
+      event.res.headers.set("Content-Type", contentType);
+      event.res.headers.set(
+        "Cache-Control",
+        "public, max-age=31536000, immutable",
+      );
+
+      return Buffer.from(targetFile.data);
+    }
+  }
+
+  // For non-root paths, proceed with normal file/directory lookup
+  const fullPath = `${rootPath}${filepath}`;
   const targetFile = files.find((file) => file.name === fullPath);
 
   // If exact file found, return file content
@@ -135,7 +236,7 @@ export default defineHandler(async (event) => {
   }
 
   // If no exact file match, treat as directory and list contents
-  const dirPath = filepath ? `${rootPath}${filepath}/` : rootPath;
+  const dirPath = `${rootPath}${filepath}/`;
 
   // Filter and map all files in the directory (recursive)
   const dirContents = files

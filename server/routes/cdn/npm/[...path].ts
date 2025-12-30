@@ -50,7 +50,7 @@ async function ensurePackageCached(
     });
   }
 
-  const tarballData = new Uint8Array(await tarballRes.arrayBuffer());
+  const tarballData = await tarballRes.bytes();
   const files = await parseTarGzip(tarballData);
 
   // Determine root directory in tarball

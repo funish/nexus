@@ -1,7 +1,7 @@
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
-import { lookup } from "mrmime";
+import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 
 // Check if version is a branch (not a tag or commit)
@@ -200,7 +200,7 @@ export default defineHandler(async (event) => {
       const readmeData = await getCachedFile(owner, repo, version, "README.md");
 
       if (readmeData) {
-        const contentType = lookup("README.md") || "text/plain";
+        const contentType = getContentType("README.md");
 
         event.res.headers.set("Content-Type", contentType);
         event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
@@ -212,7 +212,7 @@ export default defineHandler(async (event) => {
       const indexData = await getCachedFile(owner, repo, version, "index.js");
 
       if (indexData) {
-        const contentType = lookup("index.js") || "application/javascript";
+        const contentType = getContentType("index.js");
 
         event.res.headers.set("Content-Type", contentType);
         event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
@@ -233,7 +233,7 @@ export default defineHandler(async (event) => {
 
   // If file found, return content
   if (fileData) {
-    const contentType = lookup(filepath) || "application/octet-stream";
+    const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
     event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));

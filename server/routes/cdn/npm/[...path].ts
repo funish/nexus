@@ -1,7 +1,7 @@
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
-import { lookup } from "mrmime";
+import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 
 // Check if version should not be cached (when version not specified)
@@ -258,7 +258,7 @@ export default defineHandler(async (event) => {
         });
       }
 
-      const contentType = lookup(entryFile) || "application/octet-stream";
+      const contentType = getContentType(entryFile);
 
       event.res.headers.set("Content-Type", contentType);
       event.res.headers.set("Cache-Control", getNpmCacheControl(versionSpecified));
@@ -272,7 +272,7 @@ export default defineHandler(async (event) => {
 
   // If file found, return content
   if (fileData) {
-    const contentType = lookup(filepath) || "application/octet-stream";
+    const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
     event.res.headers.set("Cache-Control", getNpmCacheControl(versionSpecified));

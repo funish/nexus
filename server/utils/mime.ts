@@ -1,4 +1,4 @@
-import { lookup } from "mrmime";
+import { mimes } from "mrmime";
 
 /**
  * Add UTF-8 charset to text-based content types
@@ -35,6 +35,24 @@ export function addCharsetToContentType(contentType: string): string {
 }
 
 /**
+ * Custom MIME type lookup with corrected types
+ *
+ * @param filepath - The file path to lookup
+ * @returns The MIME type for the file
+ */
+export function lookup(filepath: string): string {
+  const ext = (filepath.split(".").pop() || "").toLowerCase();
+
+  // Override incorrect types from mrmime
+  if (ext === "ts" || ext === "tsx") {
+    return "text/typescript";
+  }
+
+  // Use mrmime's lookup for other types
+  return mimes[ext] || "application/octet-stream";
+}
+
+/**
  * Get content type for a file with UTF-8 charset for text files
  *
  * @param filepath - The file path to lookup
@@ -45,6 +63,6 @@ export function addCharsetToContentType(contentType: string): string {
  * getContentType("image.png") // "image/png"
  */
 export function getContentType(filepath: string): string {
-  const contentType = lookup(filepath) || "application/octet-stream";
+  const contentType = lookup(filepath);
   return addCharsetToContentType(contentType);
 }

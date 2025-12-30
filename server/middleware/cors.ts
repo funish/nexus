@@ -1,4 +1,4 @@
-import { defineMiddleware, handleCors } from "h3";
+import { defineMiddleware, handleCors } from "nitro/h3";
 
 /**
  * CORS middleware for all routes

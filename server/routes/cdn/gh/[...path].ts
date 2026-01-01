@@ -1,3 +1,4 @@
+import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
@@ -5,6 +6,31 @@ import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 import semver from "semver";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["CDN"],
+    summary: "GitHub releases CDN",
+    description: "Access GitHub release assets and repository files",
+    parameters: [
+      {
+        in: "path",
+        name: "path",
+        description: "GitHub resource path (owner/repo/version/file or owner/repo/file)",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Returns file content or package listing",
+      },
+      404: {
+        description: "Resource not found",
+      },
+    },
+  },
+});
 
 // Check if version is a branch (not a tag or commit)
 function isBranch(version: string): boolean {

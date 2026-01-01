@@ -1,7 +1,34 @@
+import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["CDN"],
+    summary: "WordPress plugins and themes CDN",
+    description: "Access WordPress plugin and theme files from WordPress SVN repository",
+    parameters: [
+      {
+        in: "path",
+        name: "path",
+        description:
+          "WordPress resource path (plugins/name/tags/version/file or themes/name/version/file)",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Returns file content with appropriate content-type",
+      },
+      404: {
+        description: "Resource not found",
+      },
+    },
+  },
+});
 
 /**
  * Get appropriate cache-control header based on version type

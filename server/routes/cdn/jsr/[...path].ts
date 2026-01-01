@@ -1,3 +1,4 @@
+import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
@@ -5,6 +6,31 @@ import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 import semver from "semver";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["CDN"],
+    summary: "JSR (JavaScript Registry) CDN",
+    description: "Access packages from the JSR registry for JavaScript/TypeScript modules",
+    parameters: [
+      {
+        in: "path",
+        name: "path",
+        description: "JSR package path (e.g., '@std/package@version/file')",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Returns package file or listing",
+      },
+      404: {
+        description: "Package not found",
+      },
+    },
+  },
+});
 
 // Check if version is a complete semver (x.y.z) that should be cached long-term
 function isCompleteSemver(version: string): boolean {

@@ -43,8 +43,8 @@
       }
 
       .links {
-        margin-top: 32px;
-        padding-top: 24px;
+        margin-top: 24px;
+        padding-top: 16px;
         border-top: 1px solid #eee;
       }
 
@@ -60,31 +60,58 @@
       .links a:hover {
         text-decoration: underline;
       }
+
+      .links strong {
+        display: block;
+        margin-top: 16px;
+        margin-bottom: 8px;
+        font-size: 16px;
+        color: #333;
+      }
     </style>
   </head>
   <body>
     <div class="container">
       <h1>Nexus</h1>
-      <p>Unified CDN and registry mirror for npm, GitHub, JSR, cdnjs, and WordPress packages.</p>
+      <p>
+        Universal package registry and CDN - WinGet registry mirror, npm, GitHub, JSR, cdnjs,
+        WordPress, and 40+ package registries.
+      </p>
 
       <div class="links">
-        <a href="/cdn/npm/jquery@3.6.4/dist/jquery.min.js">
-          /cdn/npm/jquery@3.6.4/dist/jquery.min.js
+        <strong>WinGet Registry</strong>
+        <a href="/registry/winget/packages"> /registry/winget/packages (List all packages) </a>
+        <a href="/registry/winget/packages/Microsoft.VisualStudioCode">
+          /registry/winget/packages/{id} (Get package details)
         </a>
-        <a href="/cdn/gh/jquery/jquery@3.6.4/dist/jquery.min.js">
-          /cdn/gh/jquery/jquery@3.6.4/dist/jquery.min.js
+        <a href="/registry/winget/manifestSearch?query=Adobe&matchType=CaseInsensitive">
+          /registry/winget/manifestSearch (Search packages)
         </a>
-        <a href="/cdn/jsr/@std/path@1.1.4/mod.ts"> /cdn/jsr/@std/path@1.1.4/mod.ts </a>
-        <a href="/cdn/cdnjs/jquery/3.7.1/jquery.min.js"> /cdn/cdnjs/jquery/3.7.1/jquery.min.js </a>
-        <a href="/cdn/cdnjs/jquery@3.7.1/jquery.min.js"> /cdn/cdnjs/jquery@3.7.1/jquery.min.js </a>
-        <a href="/cdn/wp/plugins/wp-slimstat/tags/4.6.5/wp-slimstat.js">
-          /cdn/wp/plugins/wp-slimstat/tags/4.6.5/wp-slimstat.js
+
+        <strong>CDN Endpoints</strong>
+        <a href="/cdn/npm/react@18/index.js"> /cdn/npm/react@18/index.js (npm packages) </a>
+        <a href="/cdn/gh/jquery/jquery@3.7.1/dist/jquery.js">
+          /cdn/gh/jquery/jquery@3.7.1/dist/jquery.js (GitHub releases)
         </a>
-        <a href="/cdn/wp/themes/twentytwentyfour/1.0/style.css">
-          /cdn/wp/themes/twentytwentyfour/1.0/style.css
+        <a href="/cdn/jsr/@std/path@1.1.4/mod.ts">
+          /cdn/jsr/@std/path@1.1.4/mod.ts (JSR registry)
         </a>
-        <a href="/mirror/npm/jquery"> /mirror/npm/jquery (npm registry mirror) </a>
-        <a href="/mirror/jsr/@jsr/std__path"> /mirror/jsr/@jsr/std__path (JSR registry mirror) </a>
+        <a href="/cdn/cdnjs/jquery@3.7.1/jquery.min.js">
+          /cdn/cdnjs/jquery@3.7.1/jquery.min.js (cdnjs libraries)
+        </a>
+        <a href="/cdn/wp/plugins/akismet/tags/5.3/akismet.js">
+          /cdn/wp/plugins/{name}/tags/{version}/{file} (WordPress plugins)
+        </a>
+
+        <strong>Registry Mirror</strong>
+        <a href="/mirror/npm/react"> /mirror/npm/react (npm registry) </a>
+        <a href="/mirror/pypi/requests"> /mirror/pypi/requests (PyPI registry) </a>
+        <a href="/mirror/crates/tokio"> /mirror/crates/tokio (crates.io registry) </a>
+
+        <strong>API Documentation</strong>
+        <a href="/_docs/scalar">/_docs/scalar (Scalar UI - Interactive API docs)</a>
+        <a href="/_docs/swagger">/_docs/swagger (Swagger UI)</a>
+        <a href="/_docs/openapi.json">/_docs/openapi.json (OpenAPI specification)</a>
       </div>
     </div>
   </body>

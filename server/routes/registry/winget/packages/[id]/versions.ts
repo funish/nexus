@@ -1,16 +1,57 @@
 import { defineCachedHandler } from "nitro/cache";
+import { defineRouteMeta } from "nitro";
 import { getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import type { VersionMultipleResponse } from "../../../../../utils/winget";
 import { buildPackageIndex } from "../../../../../utils/winget";
 
-/**
- * GET /registry/winget/packages/{PackageIdentifier}/versions
- *
- * WinGet.RestSource API - Get all versions for a package
- *
- * Response: VersionMultipleResponse
- */
+defineRouteMeta({
+  openAPI: {
+    tags: ["WinGet Registry"],
+    summary: "Get all versions of a WinGet package",
+    description: "Retrieve all available versions for a specific WinGet package",
+    parameters: [
+      {
+        in: "path",
+        name: "id",
+        description: "Package identifier",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Successful response",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                Data: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      PackageVersion: { type: "string" },
+                      DefaultLocale: { type: "string" },
+                      Locales: { type: "array", items: { type: "string" } },
+                      Installers: { type: "array", items: { type: "string" } },
+                    },
+                  },
+                },
+                ContinuationToken: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+      404: {
+        description: "Package not found",
+      },
+    },
+  },
+});
+
 export default defineCachedHandler(
   async (event) => {
     const packageId = getRouterParam(event, "id");
@@ -34,12 +75,9 @@ export default defineCachedHandler(
     }
 
     const response: VersionMultipleResponse = {
-      Data: Array.from(versions)
-        .sort()
-        .reverse()
-        .map((version) => ({
-          PackageVersion: version,
-        })),
+      Data: Array.from(versions).map((version) => ({
+        PackageVersion: version,
+      })),
     };
 
     event.res.headers.set("Content-Type", "application/json");

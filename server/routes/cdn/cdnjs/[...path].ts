@@ -1,9 +1,35 @@
+import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 import semver from "semver";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["CDN"],
+    summary: "cdnjs library CDN",
+    description: "Access libraries hosted on cdnjs CDN",
+    parameters: [
+      {
+        in: "path",
+        name: "path",
+        description: "Library path (e.g., 'jquery@3.6.0/dist/jquery.min.js')",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Returns library file with appropriate content-type",
+      },
+      404: {
+        description: "Library not found",
+      },
+    },
+  },
+});
 
 // Check if version is a complete semver (x.y.z) that should be cached long-term
 function isCompleteSemver(version: string): boolean {

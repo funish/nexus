@@ -1,3 +1,4 @@
+import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, readBody } from "nitro/h3";
 import type {
   MatchType,
@@ -6,6 +7,92 @@ import type {
   ManifestSearchResponse,
 } from "../../../utils/winget";
 import { buildPackageIndex } from "../../../utils/winget";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["WinGet Registry"],
+    summary: "Search WinGet packages",
+    description: "Search for WinGet packages by keyword with various match types",
+    parameters: [
+      {
+        in: "query",
+        name: "query",
+        description: "Search keyword",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "query",
+        name: "matchType",
+        description:
+          "Match type (Exact, CaseInsensitive, StartsWith, Substring, Wildcard, Fuzzy, FuzzySubstring)",
+        required: false,
+        schema: {
+          type: "string",
+          enum: [
+            "Exact",
+            "CaseInsensitive",
+            "StartsWith",
+            "Substring",
+            "Wildcard",
+            "Fuzzy",
+            "FuzzySubstring",
+          ],
+        },
+      },
+      {
+        in: "query",
+        name: "maximumResults",
+        description: "Maximum number of results to return",
+        required: false,
+        schema: { type: "number" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Search results",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                Data: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      PackageIdentifier: { type: "string" },
+                      PackageName: { type: "string" },
+                      Publisher: { type: "string" },
+                      Versions: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            PackageVersion: { type: "string" },
+                            Channel: { type: "string" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                RequiredPackageMatchFields: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+                UnsupportedPackageMatchFields: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
 
 /**
  * GET/POST /registry/winget/manifestSearch

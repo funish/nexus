@@ -1,7 +1,52 @@
 import { defineCachedHandler } from "nitro/cache";
+import { defineRouteMeta } from "nitro";
 import { getQuery } from "nitro/h3";
 import type { PackageMultipleResponse, WinGetPackage } from "../../../utils/winget";
 import { buildPackageIndex } from "../../../utils/winget";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["WinGet Registry"],
+    summary: "Get all WinGet packages",
+    description: "Retrieve a paginated list of all WinGet packages with their versions",
+    parameters: [
+      {
+        in: "query",
+        name: "ContinuationToken",
+        description: "Pagination token for retrieving the next page of results",
+        required: false,
+        schema: {
+          type: "string",
+        },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Successful response",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                Data: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      PackageIdentifier: { type: "string" },
+                      Versions: { type: "array", items: { type: "string" } },
+                    },
+                  },
+                },
+                ContinuationToken: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
 
 /**
  * GET /registry/winget/packages

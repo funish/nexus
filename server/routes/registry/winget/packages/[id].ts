@@ -1,8 +1,47 @@
 import { defineCachedHandler } from "nitro/cache";
+import { defineRouteMeta } from "nitro";
 import { getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import type { PackageSingleResponse } from "../../../../utils/winget";
 import { buildPackageIndex } from "../../../../utils/winget";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["WinGet Registry"],
+    summary: "Get specific WinGet package",
+    description: "Retrieve details of a specific WinGet package by its identifier",
+    parameters: [
+      {
+        in: "path",
+        name: "id",
+        description: "Package identifier (e.g., 'Microsoft.VisualStudioCode')",
+        required: true,
+        schema: {
+          type: "string",
+        },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Successful response",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                PackageIdentifier: { type: "string" },
+                Versions: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
+      },
+      404: {
+        description: "Package not found",
+      },
+    },
+  },
+});
 
 /**
  * GET /registry/winget/packages/{PackageIdentifier}

@@ -1,3 +1,4 @@
+import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
@@ -5,6 +6,33 @@ import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 import semver from "semver";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["CDN"],
+    summary: "npm package CDN endpoint",
+    description:
+      "Access npm packages and their files. Supports package listings, metadata, and tarball downloads.",
+    parameters: [
+      {
+        in: "path",
+        name: "path",
+        description: "Package path (e.g., 'package@version', 'package@version/file', 'package')",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description:
+          "Successful response - returns package metadata, file listing, or tarball content",
+      },
+      404: {
+        description: "Package not found",
+      },
+    },
+  },
+});
 
 // Check if version is a complete semver (x.y.z) that should be cached long-term
 function isCompleteSemver(version: string): boolean {

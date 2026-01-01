@@ -1,9 +1,42 @@
 import { defineCachedHandler } from "nitro/cache";
+import { defineRouteMeta } from "nitro";
 import { getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
 import { parseYAML } from "confbox";
 import type { VersionSingleResponse } from "../../../../../../utils/winget";
 import { getVersionManifests, fetchManifestContent } from "../../../../../../utils/winget";
+
+defineRouteMeta({
+  openAPI: {
+    tags: ["WinGet Registry"],
+    summary: "Get specific version of a WinGet package",
+    description: "Retrieve detailed manifest information for a specific package version",
+    parameters: [
+      {
+        in: "path",
+        name: "id",
+        description: "Package identifier",
+        required: true,
+        schema: { type: "string" },
+      },
+      {
+        in: "path",
+        name: "version",
+        description: "Package version",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      200: {
+        description: "Successful response with manifest content",
+      },
+      404: {
+        description: "Package or version not found",
+      },
+    },
+  },
+});
 
 /**
  * GET /registry/winget/packages/{PackageIdentifier}/versions/{PackageVersion}

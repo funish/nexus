@@ -27,12 +27,14 @@
   "devDependencies": {
     "@funish/basis": "0.1.2",
     "@types/node": "25.0.3",
+    "@types/semver": "7.7.1",
     "mrmime": "2.0.1",
     "nanotar": "0.2.0",
     "nitro": "3.0.1-alpha.1",
     "oxfmt": "0.21.0",
     "oxlint": "1.36.0",
     "oxlint-tsgolint": "0.10.0",
-    "rolldown": "1.0.0-beta.57"
+    "rolldown": "1.0.0-beta.57",
+    "semver": "7.7.3"
   }
 }

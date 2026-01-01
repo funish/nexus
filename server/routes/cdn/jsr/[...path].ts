@@ -3,37 +3,36 @@ import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
+import semver from "semver";
+import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
-// Check if version should not be cached (when version not specified)
-function isNonCacheableVersion(versionSpecified: boolean): boolean {
-  return !versionSpecified;
+// Check if version is a complete semver (x.y.z) that should be cached long-term
+function isCompleteSemver(version: string): boolean {
+  // Complete semver: 1.0.0, 1.0.0-alpha.1, etc.
+  return /^\d+\.\d+\.\d+/.test(version);
 }
 
 // Get appropriate cache-control header based on version
-function getJsrCacheControl(versionSpecified: boolean): string {
-  // When version not specified - shorter cache (10 minutes)
-  if (isNonCacheableVersion(versionSpecified)) {
+function getJsrCacheControl(version: string): string {
+  // Incomplete semver or aliases - shorter cache (10 minutes)
+  // Examples: "latest", "1", "1.1", "^1.1.0", "~1.1.0"
+  if (!isCompleteSemver(version)) {
     return "public, max-age=600";
   }
-  // Specific versions - long cache (1 year, immutable)
+  // Complete semver versions - long cache (1 year, immutable)
   return "public, max-age=31536000, immutable";
 }
 
 // Ensure all files from a package version are cached
-async function ensurePackageCached(
-  packageName: string,
-  version: string,
-  tarballUrl: string,
-  versionSpecified: boolean,
-) {
+async function ensurePackageCached(packageName: string, version: string, tarballUrl: string) {
   const storage = useStorage("cache");
   const cacheBase = `cdn/jsr/${packageName}/${version}`;
 
-  // Skip cache when version not specified - always refetch
-  if (isNonCacheableVersion(versionSpecified)) {
+  // Skip cache when version is incomplete semver - always refetch
+  if (!isCompleteSemver(version)) {
     await storage.removeItem(cacheBase);
   } else {
-    // For specific versions, check if already cached
+    // For complete semver versions, check if already cached
     const cachedMeta = await storage.getMeta(cacheBase);
     if (cachedMeta?.files) {
       return;
@@ -58,7 +57,7 @@ async function ensurePackageCached(
   const rootPath = `${rootDir}/`;
 
   // Build file list
-  const fileList: Array<{ name: string; type: string; size: number }> = [];
+  const fileList: Array<CdnFile> = [];
 
   // Cache all files
   for (const file of files) {
@@ -70,7 +69,6 @@ async function ensurePackageCached(
 
       fileList.push({
         name: relativePath,
-        type: "file",
         size: file.size || 0,
       });
     }
@@ -121,7 +119,6 @@ export default defineHandler(async (event) => {
   let packageName: string;
   let version: string;
   let filepath: string;
-  let versionSpecified: boolean;
 
   // JSR packages always have scope
   const match = path.match(/^@([^/]+)\/([^@/]+)(?:@([^/]+))?(?:\/(.*))?$/);
@@ -135,7 +132,6 @@ export default defineHandler(async (event) => {
   const [, scope, pkg, pkgVersion, pkgFilepath] = match;
   packageName = `@${scope}/${pkg}`;
   version = pkgVersion || "latest";
-  versionSpecified = !!pkgVersion;
   filepath = pkgFilepath || "";
 
   // Fetch package metadata from npm.jsr.io
@@ -155,6 +151,20 @@ export default defineHandler(async (event) => {
 
   // Try to get specified version, fallback to latest if not found
   let versionInfo = metadata.versions[version];
+
+  // If exact version not found, try to resolve version range (e.g., "1", "1.1", "^1.1.0")
+  if (!versionInfo) {
+    const allVersions = Object.keys(metadata.versions);
+
+    // Try semver range matching
+    const matchedVersion = semver.maxSatisfying(allVersions, version);
+    if (matchedVersion) {
+      version = matchedVersion;
+      versionInfo = metadata.versions[version];
+    }
+  }
+
+  // Fallback to latest if still not found
   if (!versionInfo && distTags?.latest) {
     const latest = distTags.latest;
     if (latest) {
@@ -172,63 +182,60 @@ export default defineHandler(async (event) => {
 
   // Download tarball and cache all files
   const tarballUrl = versionInfo.dist.tarball;
-  await ensurePackageCached(packageName, version, tarballUrl, versionSpecified);
+  await ensurePackageCached(packageName, version, tarballUrl);
 
   const storage = useStorage("cache");
   const cacheBase = `cdn/jsr/${packageName}/${version}`;
 
+  // Read package.json to get exports field for entry file
+  let entryFile = "mod.ts"; // Default fallback
+  const packageJsonData = await getCachedFile(packageName, version, "package.json");
+  if (packageJsonData) {
+    try {
+      const packageJson = JSON.parse(new TextDecoder().decode(packageJsonData));
+      const exports = packageJson.exports;
+
+      if (typeof exports === "string") {
+        // "./mod.js" -> "mod.js"
+        entryFile = exports.startsWith("./") ? exports.slice(2) : exports;
+      } else if (exports && exports["."]) {
+        // { ".": { "default": "./mod.js" } } or { ".": "./mod.js" }
+        const dotExport = exports["."];
+        if (typeof dotExport === "string") {
+          entryFile = dotExport.startsWith("./") ? dotExport.slice(2) : dotExport;
+        } else if (dotExport && dotExport.default) {
+          entryFile = dotExport.default.startsWith("./")
+            ? dotExport.default.slice(2)
+            : dotExport.default;
+        }
+      }
+    } catch {
+      // If package.json is invalid, use default mod.ts
+    }
+  }
+
   // Special handling for package root access
   if (!filepath) {
     if (hasTrailingSlash) {
-      // /cdn/jsr/@luca/flag/ -> list directory contents
+      // /cdn/jsr/@luca/flag/ -> list directory contents with metadata
       const meta = await storage.getMeta(cacheBase);
-      const fileList = meta?.files || [];
+      const fileList = (meta?.files || []) as Array<CdnFile>;
 
       event.res.headers.set("Content-Type", "application/json");
       event.res.headers.set("Cache-Control", "public, max-age=600");
 
-      return {
+      const response: CdnPackageListing = {
+        // Package metadata
+        name: metadata.name,
+        version: version,
+        // Directory info
         path: "",
-        type: "directory",
         files: fileList,
       };
+
+      return response;
     } else {
-      // /cdn/jsr/@luca/flag -> return package.json main file
-      const packageJsonData = await getCachedFile(packageName, version, "package.json");
-
-      if (!packageJsonData) {
-        throw new HTTPError({
-          status: 404,
-          statusText: "package.json not found",
-        });
-      }
-
-      const packageJson = JSON.parse(new TextDecoder().decode(packageJsonData));
-
-      // Determine entry file following npm priority
-      let entryFile =
-        packageJson.jsdelivr ||
-        packageJson.browser ||
-        packageJson.main ||
-        packageJson.module ||
-        "index.js";
-
-      // Handle exports field
-      if (
-        !packageJson.jsdelivr &&
-        !packageJson.browser &&
-        !packageJson.main &&
-        packageJson.exports
-      ) {
-        if (typeof packageJson.exports === "string") {
-          entryFile = packageJson.exports;
-        } else if (packageJson.exports["."]) {
-          const exportEntry = packageJson.exports["."];
-          entryFile =
-            typeof exportEntry === "string" ? exportEntry : exportEntry.default || entryFile;
-        }
-      }
-
+      // /cdn/jsr/@luca/flag -> return entry file
       const fileData = await getCachedFile(packageName, version, entryFile);
 
       if (!fileData) {
@@ -241,7 +248,7 @@ export default defineHandler(async (event) => {
       const contentType = getContentType(entryFile);
 
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set("Cache-Control", getJsrCacheControl(versionSpecified));
+      event.res.headers.set("Cache-Control", getJsrCacheControl(version));
 
       return Buffer.from(fileData);
     }
@@ -255,7 +262,7 @@ export default defineHandler(async (event) => {
     const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getJsrCacheControl(versionSpecified));
+    event.res.headers.set("Cache-Control", getJsrCacheControl(version));
 
     return Buffer.from(fileData);
   }
@@ -267,11 +274,10 @@ export default defineHandler(async (event) => {
 
   // Filter files by directory prefix
   const dirPrefix = `${filepath}/`;
-  const dirContents = allFiles
+  const dirContents: CdnFile[] = allFiles
     .filter((file: { name: string }) => file.name.startsWith(dirPrefix))
-    .map((file: { name: string; type: string; size: number }) => ({
+    .map((file: { name: string; size: number }) => ({
       name: file.name.slice(dirPrefix.length),
-      type: file.type,
       size: file.size,
     }))
     .filter((file: { name: string }) => file.name.length > 0);
@@ -288,9 +294,12 @@ export default defineHandler(async (event) => {
   event.res.headers.set("Content-Type", "application/json");
   event.res.headers.set("Cache-Control", "public, max-age=600");
 
-  return {
+  const response: CdnPackageListing = {
+    name: metadata.name,
+    version: version,
     path: filepath,
-    type: "directory",
     files: dirContents,
   };
+
+  return response;
 });

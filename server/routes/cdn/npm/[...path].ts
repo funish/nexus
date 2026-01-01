@@ -3,38 +3,36 @@ import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
+import semver from "semver";
+import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
-// Check if version should not be cached (when version not specified)
-function isNonCacheableVersion(versionSpecified: boolean): boolean {
-  // Don't cache when user didn't specify a version
-  return !versionSpecified;
+// Check if version is a complete semver (x.y.z) that should be cached long-term
+function isCompleteSemver(version: string): boolean {
+  // Complete semver: 1.2.3, 1.2.3-alpha.1, etc.
+  return /^\d+\.\d+\.\d+/.test(version);
 }
 
 // Get appropriate cache-control header based on version
-function getNpmCacheControl(versionSpecified: boolean): string {
-  // When version not specified - shorter cache (10 minutes)
-  if (isNonCacheableVersion(versionSpecified)) {
+function getNpmCacheControl(version: string): string {
+  // Incomplete semver or aliases - shorter cache (10 minutes)
+  // Examples: "latest", "3", "3.1", "^1.2.3", "~1.2.3"
+  if (!isCompleteSemver(version)) {
     return "public, max-age=600";
   }
-  // Specific versions - long cache (1 year, immutable)
+  // Complete semver versions - long cache (1 year, immutable)
   return "public, max-age=31536000, immutable";
 }
 
 // Ensure all files from a package version are cached
-async function ensurePackageCached(
-  packageName: string,
-  version: string,
-  tarballUrl: string,
-  versionSpecified: boolean,
-) {
+async function ensurePackageCached(packageName: string, version: string, tarballUrl: string) {
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
 
-  // Skip cache when version not specified - always refetch
-  if (isNonCacheableVersion(versionSpecified)) {
+  // Skip cache when version is incomplete semver - always refetch
+  if (!isCompleteSemver(version)) {
     await storage.removeItem(cacheBase);
   } else {
-    // For specific versions, check if already cached
+    // For complete semver versions, check if already cached
     const cachedMeta = await storage.getMeta(cacheBase);
     if (cachedMeta?.files) {
       return;
@@ -59,7 +57,7 @@ async function ensurePackageCached(
   const rootPath = `${rootDir}/`;
 
   // Build file list
-  const fileList: Array<{ name: string; type: string; size: number }> = [];
+  const fileList: Array<CdnFile> = [];
 
   // Cache all files
   for (const file of files) {
@@ -71,7 +69,6 @@ async function ensurePackageCached(
 
       fileList.push({
         name: relativePath,
-        type: "file",
         size: file.size || 0,
       });
     }
@@ -119,7 +116,6 @@ export default defineHandler(async (event) => {
   let packageName: string;
   let version: string;
   let filepath: string;
-  let versionSpecified: boolean;
 
   if (path.startsWith("@")) {
     // Scoped: @types/hast@latest/index.d.ts
@@ -134,7 +130,6 @@ export default defineHandler(async (event) => {
     const [, scope, pkg, pkgVersion, pkgFilepath] = match;
     packageName = `@${scope}/${pkg}`;
     version = pkgVersion || "latest";
-    versionSpecified = !!pkgVersion;
     filepath = pkgFilepath || "";
   } else {
     // Normal: uikit@latest/dist/js/uikit.js
@@ -155,7 +150,6 @@ export default defineHandler(async (event) => {
     }
     packageName = pkg;
     version = pkgVersion || "latest";
-    versionSpecified = !!pkgVersion;
     filepath = pkgFilepath || "";
   }
 
@@ -174,6 +168,20 @@ export default defineHandler(async (event) => {
 
   // Try to get specified version, fallback to latest if not found
   let versionInfo = metadata.versions[version];
+
+  // If exact version not found, try to resolve version range (e.g., "3", "3.1", "^3.1.0")
+  if (!versionInfo) {
+    const allVersions = Object.keys(metadata.versions);
+
+    // Try semver range matching
+    const matchedVersion = semver.maxSatisfying(allVersions, version);
+    if (matchedVersion) {
+      version = matchedVersion;
+      versionInfo = metadata.versions[version];
+    }
+  }
+
+  // Fallback to latest if still not found
   if (!versionInfo && distTags?.latest) {
     const latest = distTags.latest;
     if (latest) {
@@ -191,7 +199,7 @@ export default defineHandler(async (event) => {
 
   // Download tarball and cache all files
   const tarballUrl = versionInfo.dist.tarball;
-  await ensurePackageCached(packageName, version, tarballUrl, versionSpecified);
+  await ensurePackageCached(packageName, version, tarballUrl);
 
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
@@ -199,55 +207,28 @@ export default defineHandler(async (event) => {
   // Special handling for package root access
   if (!filepath) {
     if (hasTrailingSlash) {
-      // /cdn/npm/uikit/ -> list directory contents
+      // /cdn/npm/uikit/ -> list directory contents with metadata
       const meta = await storage.getMeta(cacheBase);
-      const fileList = meta?.files || [];
+      const fileList = (meta?.files || []) as Array<CdnFile>;
 
       event.res.headers.set("Content-Type", "application/json");
       event.res.headers.set("Cache-Control", "public, max-age=600");
 
-      return {
+      const response: CdnPackageListing = {
+        // Package metadata
+        name: metadata.name,
+        version: version,
+        // Directory info
         path: "",
-        type: "directory",
         files: fileList,
       };
+
+      return response;
     } else {
-      // /cdn/npm/uikit -> return package.json main file
-      const packageJsonData = await getCachedFile(packageName, version, "package.json");
-
-      if (!packageJsonData) {
-        throw new HTTPError({
-          status: 404,
-          statusText: "package.json not found",
-        });
-      }
-
-      const packageJson = JSON.parse(new TextDecoder().decode(packageJsonData));
-
-      // Determine entry file following jsDelivr priority:
-      // jsdelivr > browser > main > module > exports["."] > index.js
-      let entryFile =
-        packageJson.jsdelivr ||
-        packageJson.browser ||
-        packageJson.main ||
-        packageJson.module ||
-        "index.js";
-
-      // Handle exports field (lower priority than the above fields)
-      if (
-        !packageJson.jsdelivr &&
-        !packageJson.browser &&
-        !packageJson.main &&
-        packageJson.exports
-      ) {
-        if (typeof packageJson.exports === "string") {
-          entryFile = packageJson.exports;
-        } else if (packageJson.exports["."]) {
-          const exportEntry = packageJson.exports["."];
-          entryFile =
-            typeof exportEntry === "string" ? exportEntry : exportEntry.default || entryFile;
-        }
-      }
+      // /cdn/npm/uikit -> return entry file
+      // Use npm registry metadata to determine entry file
+      // Priority: browser > main > module > index.js
+      let entryFile = versionInfo.browser || versionInfo.main || versionInfo.module || "index.js";
 
       const fileData = await getCachedFile(packageName, version, entryFile);
 
@@ -261,7 +242,7 @@ export default defineHandler(async (event) => {
       const contentType = getContentType(entryFile);
 
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set("Cache-Control", getNpmCacheControl(versionSpecified));
+      event.res.headers.set("Cache-Control", getNpmCacheControl(version));
 
       return Buffer.from(fileData);
     }
@@ -275,7 +256,7 @@ export default defineHandler(async (event) => {
     const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getNpmCacheControl(versionSpecified));
+    event.res.headers.set("Cache-Control", getNpmCacheControl(version));
 
     return Buffer.from(fileData);
   }
@@ -287,11 +268,10 @@ export default defineHandler(async (event) => {
 
   // Filter files by directory prefix
   const dirPrefix = `${filepath}/`;
-  const dirContents = allFiles
+  const dirContents: CdnFile[] = allFiles
     .filter((file: { name: string }) => file.name.startsWith(dirPrefix))
-    .map((file: { name: string; type: string; size: number }) => ({
+    .map((file: { name: string; size: number }) => ({
       name: file.name.slice(dirPrefix.length),
-      type: file.type,
       size: file.size,
     }))
     .filter((file: { name: string }) => file.name.length > 0);
@@ -308,9 +288,12 @@ export default defineHandler(async (event) => {
   event.res.headers.set("Content-Type", "application/json");
   event.res.headers.set("Cache-Control", "public, max-age=600");
 
-  return {
+  const response: CdnPackageListing = {
+    name: metadata.name,
+    version: version,
     path: filepath,
-    type: "directory",
     files: dirContents,
   };
+
+  return response;
 });

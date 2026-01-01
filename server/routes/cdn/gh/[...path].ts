@@ -3,6 +3,8 @@ import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
+import semver from "semver";
+import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 // Check if version is a branch (not a tag or commit)
 function isBranch(version: string): boolean {
@@ -18,13 +20,25 @@ function isBranch(version: string): boolean {
   return false;
 }
 
+// Check if version is a complete semver tag (x.y.z)
+function isCompleteSemver(version: string): boolean {
+  // Ensure version is a string
+  if (typeof version !== "string") {
+    return false;
+  }
+  // Complete semver: 1.2.3, v1.2.3, 1.2.3-beta.1, etc.
+  // Remove 'v' prefix if present, then check for x.y.z format
+  const normalizedVersion = version.replace(/^v/, "");
+  return /^\d+\.\d+\.\d+/.test(normalizedVersion);
+}
+
 // Get appropriate cache-control header based on version type
-function getCacheControl(version: string, versionSpecified: boolean): string {
-  // When version not specified or is a branch - shorter cache (10 minutes)
-  if (!versionSpecified || isBranch(version)) {
+function getCacheControl(version: string): string {
+  // Branches, incomplete versions - shorter cache (10 minutes)
+  if (isBranch(version) || !isCompleteSemver(version)) {
     return "public, max-age=600";
   }
-  // Tags and commits - long cache (1 year, immutable)
+  // Complete semver tags and commits - long cache (1 year, immutable)
   return "public, max-age=31536000, immutable";
 }
 
@@ -45,21 +59,16 @@ async function getGitHubTarballUrl(owner: string, repo: string, version: string)
 }
 
 // Ensure all files from a GitHub repository version are cached
-async function ensureGitHubCached(
-  owner: string,
-  repo: string,
-  version: string,
-  versionSpecified: boolean,
-) {
+async function ensureGitHubCached(owner: string, repo: string, version: string) {
   const storage = useStorage("cache");
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
 
-  // Skip cache when version not specified or is a branch - always refetch
-  if (!versionSpecified || isBranch(version)) {
+  // Skip cache when version is incomplete semver or branch - always refetch
+  if (isBranch(version) || !isCompleteSemver(version)) {
     // Delete old cache if exists
     await storage.removeItem(cacheBase);
   } else {
-    // For tags/commits, check if already cached
+    // For complete semver tags and commits, check if already cached
     const cachedMeta = await storage.getMeta(cacheBase);
     if (cachedMeta?.files) {
       return;
@@ -91,7 +100,7 @@ async function ensureGitHubCached(
   const rootPath = `${rootDir}/`;
 
   // Build file list
-  const fileList: Array<{ name: string; type: string; size: number }> = [];
+  const fileList: Array<CdnFile> = [];
 
   // Cache all files
   for (const file of files) {
@@ -103,7 +112,6 @@ async function ensureGitHubCached(
 
       fileList.push({
         name: relativePath,
-        type: "file",
         size: file.size || 0,
       });
     }
@@ -170,11 +178,49 @@ export default defineHandler(async (event) => {
     });
   }
 
-  const version = repoVersion || "main";
-  const versionSpecified = !!repoVersion;
+  let version = repoVersion || "main";
+
+  // If version not specified or incomplete, fetch from jsDelivr API to get complete version
+  if (!repoVersion || !isCompleteSemver(version)) {
+    const apiUrl = `https://data.jsdelivr.com/v1/packages/gh/${owner}/${repo}`;
+    const apiRes = await fetch(apiUrl);
+
+    if (apiRes.ok) {
+      const apiData = await apiRes.json();
+
+      // Extract version strings from objects
+      // jsDelivr API returns: { versions: [{ version: "5.3.8" }, { version: "5.3.7" }, ...] }
+      const versionObjects = apiData.versions as Array<{ version: string }> | undefined;
+      const allVersions =
+        versionObjects?.map((v) => v.version).filter((v): v is string => typeof v === "string") ||
+        [];
+
+      // Try to find version in the list (exact match)
+      let versionFound = allVersions.includes(version);
+
+      // If exact version not found, try to resolve version range (e.g., "5", "5.3", "^5.3.0")
+      if (!versionFound && repoVersion) {
+        const matchedVersion = semver.maxSatisfying(allVersions, repoVersion);
+        if (matchedVersion) {
+          version = matchedVersion;
+          versionFound = true;
+        }
+      }
+
+      // If still not found or version not specified, get latest version
+      if (!versionFound && allVersions.length > 0) {
+        // Sort by semver (descending) and get first
+        const sortedVersions = allVersions.sort(semver.rcompare);
+        const latestVersion = sortedVersions[0];
+        if (latestVersion) {
+          version = latestVersion;
+        }
+      }
+    }
+  }
 
   // Download tarball and cache all files
-  await ensureGitHubCached(owner, repo, version, versionSpecified);
+  await ensureGitHubCached(owner, repo, version);
 
   const storage = useStorage("cache");
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
@@ -184,16 +230,19 @@ export default defineHandler(async (event) => {
     if (hasTrailingSlash) {
       // /cdn/gh/vuejs/core/ -> list directory contents
       const meta = await storage.getMeta(cacheBase);
-      const fileList = meta?.files || [];
+      const fileList = (meta?.files || []) as Array<CdnFile>;
 
       event.res.headers.set("Content-Type", "application/json");
       event.res.headers.set("Cache-Control", "public, max-age=600");
 
-      return {
+      const response: CdnPackageListing = {
+        name: `${owner}/${repo}`,
+        version: version,
         path: "",
-        type: "directory",
         files: fileList,
       };
+
+      return response;
     } else {
       // /cdn/gh/vuejs/core -> return README or main file
       // GitHub doesn't have package.json, so we try README.md or index.js
@@ -203,7 +252,7 @@ export default defineHandler(async (event) => {
         const contentType = getContentType("README.md");
 
         event.res.headers.set("Content-Type", contentType);
-        event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
+        event.res.headers.set("Cache-Control", getCacheControl(version));
 
         return Buffer.from(readmeData);
       }
@@ -215,7 +264,7 @@ export default defineHandler(async (event) => {
         const contentType = getContentType("index.js");
 
         event.res.headers.set("Content-Type", contentType);
-        event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
+        event.res.headers.set("Cache-Control", getCacheControl(version));
 
         return Buffer.from(indexData);
       }
@@ -236,7 +285,7 @@ export default defineHandler(async (event) => {
     const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getCacheControl(version, versionSpecified));
+    event.res.headers.set("Cache-Control", getCacheControl(version));
 
     return Buffer.from(fileData);
   }
@@ -248,11 +297,10 @@ export default defineHandler(async (event) => {
 
   // Filter files by directory prefix
   const dirPrefix = `${filepath}/`;
-  const dirContents = allFiles
+  const dirContents: CdnFile[] = allFiles
     .filter((file: { name: string }) => file.name.startsWith(dirPrefix))
-    .map((file: { name: string; type: string; size: number }) => ({
+    .map((file: { name: string; size: number }) => ({
       name: file.name.slice(dirPrefix.length),
-      type: file.type,
       size: file.size,
     }))
     .filter((file: { name: string }) => file.name.length > 0);
@@ -269,9 +317,12 @@ export default defineHandler(async (event) => {
   event.res.headers.set("Content-Type", "application/json");
   event.res.headers.set("Cache-Control", "public, max-age=600");
 
-  return {
+  const response: CdnPackageListing = {
+    name: `${owner}/${repo}`,
+    version: version,
     path: filepath,
-    type: "directory",
     files: dirContents,
   };
+
+  return response;
 });

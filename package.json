@@ -21,6 +21,7 @@
     "build": "nitro build",
     "dev": "nitro dev",
     "preview": "bunx srvx --prod .output/",
+    "preview:cloudflare": "nitro build --preset cloudflare_module && bunx wrangler dev",
     "lint": "basis lint --all",
     "postinstall": "basis git setup"
   },

@@ -16,9 +16,13 @@ function getWpCacheControl(isTrunk: boolean): string {
 }
 
 /**
- * Fetch and cache a single file from WordPress SVN
+ * Fetch and cache a single file from WordPress SVN with jsDelivr fallback
  */
-async function fetchAndCacheFile(svnUrl: string, cacheKey: string): Promise<Uint8Array> {
+async function fetchAndCacheFile(
+  svnUrl: string,
+  cacheKey: string,
+  jsDelivrUrl?: string,
+): Promise<Uint8Array> {
   const storage = useStorage("cache");
 
   // Check cache first
@@ -27,19 +31,30 @@ async function fetchAndCacheFile(svnUrl: string, cacheKey: string): Promise<Uint
     return new Uint8Array(cached);
   }
 
-  // Fetch from WordPress SVN
+  // Try WordPress SVN first
   const response = await fetch(svnUrl);
-  if (!response.ok) {
-    throw new HTTPError({
-      status: response.status === 404 ? 404 : 502,
-      statusText: response.status === 404 ? "File not found" : "Failed to fetch from WordPress SVN",
-    });
+  if (response.ok) {
+    const data = await response.bytes();
+    await storage.setItemRaw(cacheKey, data);
+    return data;
   }
 
-  const data = await response.bytes();
-  await storage.setItemRaw(cacheKey, data);
+  // If WordPress SVN fails and jsDelivr URL is provided, try jsDelivr
+  if (jsDelivrUrl) {
+    const jsDelivrResponse = await fetch(jsDelivrUrl);
+    if (jsDelivrResponse.ok) {
+      const data = await jsDelivrResponse.bytes();
+      await storage.setItemRaw(cacheKey, data);
+      return data;
+    }
+  }
 
-  return data;
+  // Both failed - throw error
+  throw new HTTPError({
+    status: response.status === 404 ? 404 : 502,
+    statusText:
+      response.statusText || `Failed to fetch from WordPress SVN (HTTP ${response.status})`,
+  });
 }
 
 /**
@@ -62,6 +77,7 @@ export default defineHandler(async (event) => {
   }
 
   let svnUrl: string;
+  let jsDelivrUrl: string | undefined;
   let cacheKey: string;
   let isTrunk = false;
 
@@ -78,6 +94,7 @@ export default defineHandler(async (event) => {
 
     const [, themeName, version, filepath] = themeMatch;
     svnUrl = `https://themes.svn.wordpress.org/${themeName}/${version}/${filepath}`;
+    jsDelivrUrl = `https://cdn.jsdelivr.net/wp/themes/${themeName}/${version}/${filepath}`;
     cacheKey = `cdn/wp/themes/${themeName}/${version}/${filepath}`;
   } else {
     // /wp/plugins/plugin-name/tags/version/file or /wp/plugins/plugin-name/trunk/file
@@ -96,6 +113,7 @@ export default defineHandler(async (event) => {
     // For trunk: /wp/plugins/plugin-name/trunk/file (no version)
     if (ref === "trunk") {
       svnUrl = `https://plugins.svn.wordpress.org/${pluginName}/trunk/${filepath || ""}`;
+      jsDelivrUrl = `https://cdn.jsdelivr.net/wp/${pluginName}/trunk/${filepath || ""}`;
       cacheKey = `cdn/wp/plugins/${pluginName}/trunk/${filepath || ""}`;
     } else {
       if (!version || !filepath) {
@@ -106,12 +124,13 @@ export default defineHandler(async (event) => {
         });
       }
       svnUrl = `https://plugins.svn.wordpress.org/${pluginName}/tags/${version}/${filepath}`;
+      jsDelivrUrl = `https://cdn.jsdelivr.net/wp/${pluginName}/tags/${version}/${filepath}`;
       cacheKey = `cdn/wp/plugins/${pluginName}/tags/${version}/${filepath}`;
     }
   }
 
-  // Fetch and cache file
-  const fileData = await fetchAndCacheFile(svnUrl, cacheKey);
+  // Fetch and cache file with jsDelivr fallback
+  const fileData = await fetchAndCacheFile(svnUrl, cacheKey, jsDelivrUrl);
 
   // Get content type
   const filepath = svnUrl.split("/").pop() || "";

@@ -4,12 +4,11 @@ export default defineConfig({
   serverDir: "./server/",
   storage: {
     cache: {
-      // production cache storage
+      driver: "memory",
     },
   },
   devStorage: {
     cache: {
-      // development cache storage
       driver: "fs",
       base: ".cache",
     },

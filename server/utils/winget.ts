@@ -9,12 +9,15 @@ const GITHUB_API_BASE = "https://api.github.com";
  */
 function getGitHubHeaders(): HeadersInit {
   const token = process.env.GITHUB_TOKEN;
-  if (!token) {
-    return {};
-  }
-  return {
-    Authorization: `Bearer ${token}`,
+  const headers: HeadersInit = {
+    "User-Agent": "Funish Nexus",
   };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
 }
 
 /**
@@ -419,25 +422,37 @@ export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<Pa
   const letterShas = await getLetterDirectoryShas();
 
   // Fetch all letter directory paths in parallel
-  const letterPromises = Array.from(letterShas.entries()).map(async ([letter, sha]) => {
-    try {
-      const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
-      return { letter, paths };
-    } catch (error) {
-      console.error(`Failed to fetch tree for letter ${letter}:`, error);
-      return null;
-    }
-  });
+  const letterPromises = Array.from(letterShas.entries()).map(
+    async ([letter, sha]): Promise<{
+      letter: string;
+      paths?: string[];
+      success: boolean;
+    }> => {
+      try {
+        const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
+        return { letter, paths, success: true };
+      } catch (error) {
+        console.error(`Failed to fetch tree for letter ${letter}:`, error);
+        return { letter, success: false };
+      }
+    },
+  );
 
-  const letterResults = await Promise.all(letterPromises);
+  const letterResults = await Promise.allSettled(letterPromises);
 
   // Build index from all letter paths
   const index = new Map<PackageIdentifier, Set<PackageVersion>>();
 
   for (const result of letterResults) {
-    if (!result) continue;
+    if (result.status === "rejected" || !result.value.success) {
+      continue;
+    }
 
-    const { paths } = result;
+    const { paths } = result.value;
+
+    if (!paths) {
+      continue;
+    }
 
     for (const path of paths) {
       // Only process YAML files

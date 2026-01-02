@@ -162,11 +162,21 @@ export default defineCachedHandler(
 
     // Build version data array
     const versionData: VersionSchema[] = manifestResults.map((result, index) => {
+      const version = sortedVersions[index]; // Get version from sorted array
+
+      // Ensure version exists (should always be true since we map over sortedVersions)
+      if (!version) {
+        return {
+          PackageVersion: "unknown",
+          DefaultLocale: "en-US",
+        };
+      }
+
       const data =
         result.status === "fulfilled"
           ? result.value
           : {
-              version: sortedVersions[index],
+              version,
               defaultLocale: "en-US",
               channel: undefined,
             };

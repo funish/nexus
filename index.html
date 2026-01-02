@@ -28,11 +28,34 @@
         width: 100%;
       }
 
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+
       h1 {
         font-size: 48px;
         font-weight: 700;
-        margin-bottom: 12px;
         letter-spacing: -1px;
+        margin: 0;
+      }
+
+      .header-links {
+        display: flex;
+        gap: 16px;
+      }
+
+      .header-links a {
+        font-size: 14px;
+        color: #666;
+        text-decoration: none;
+      }
+
+      .header-links a:hover {
+        color: #000;
+        text-decoration: underline;
       }
 
       p {
@@ -72,7 +95,14 @@
   </head>
   <body>
     <div class="container">
-      <h1>Nexus</h1>
+      <div class="header">
+        <h1>Nexus</h1>
+        <div class="header-links">
+          <a href="https://www.funish.net/">Website</a>
+          <a href="https://github.com/funish/nexus">GitHub</a>
+        </div>
+      </div>
+
       <p>
         Universal package registry and CDN - WinGet registry mirror, npm, GitHub, JSR, cdnjs,
         WordPress, and 40+ package registries.

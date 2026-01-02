@@ -5,6 +5,19 @@ const GITHUB_BRANCH = "master";
 const GITHUB_API_BASE = "https://api.github.com";
 
 /**
+ * Get GitHub authentication headers if token is available
+ */
+function getGitHubHeaders(): HeadersInit {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    return {};
+  }
+  return {
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+/**
  * WinGet Registry types and utilities
  * Based on WinGet.RestSource OpenAPI specification v1.1.0
  */
@@ -213,7 +226,9 @@ export async function getGitHubTree(): Promise<GitHubTreeResponse> {
 
   // Fetch from GitHub API
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/git/trees/${GITHUB_BRANCH}?recursive=1`;
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: getGitHubHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch GitHub tree: ${response.statusText}`);
@@ -332,7 +347,9 @@ export async function fetchManifestContent(manifestPath: string): Promise<string
 
   // Cache miss - fetch from GitHub
   const rawUrl = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${manifestPath}`;
-  const response = await fetch(rawUrl);
+  const response = await fetch(rawUrl, {
+    headers: getGitHubHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch manifest: ${response.statusText}`);

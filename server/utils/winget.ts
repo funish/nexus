@@ -1,3 +1,4 @@
+import type { H3Event } from "nitro/h3";
 import { useStorage } from "nitro/storage";
 
 const GITHUB_REPO = "microsoft/winget-pkgs";
@@ -455,7 +456,9 @@ export function parseVersion(path: string): PackageVersion | null {
  * Build package index from tree data
  * Map<PackageIdentifier, Set<Version>>
  */
-export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
+export async function buildPackageIndex(
+  event?: H3Event,
+): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
   const storage = useStorage("cache");
   const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
   const UPDATE_INTERVAL = 600; // 10 minutes
@@ -480,6 +483,42 @@ export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<Pa
       }
     }
   }
+
+  // If cache is stale but exists, return stale cache and trigger background update
+  if (meta?.mtime && event) {
+    const cached = await storage.getItem(cacheKey);
+    if (cached) {
+      const cachedData = cached as Record<string, string[]>;
+      const staleIndex = new Map<PackageIdentifier, Set<PackageVersion>>();
+      for (const [pkgId, versions] of Object.entries(cachedData)) {
+        staleIndex.set(pkgId, new Set(versions));
+      }
+
+      // Trigger background update using event.waitUntil
+      event.waitUntil(
+        (async () => {
+          try {
+            await rebuildPackageIndex();
+          } catch (error) {
+            console.error("Failed to rebuild package index in background:", error);
+          }
+        })(),
+      );
+
+      return staleIndex;
+    }
+  }
+
+  // No cache available, build synchronously
+  return await rebuildPackageIndex();
+}
+
+/**
+ * Rebuild the package index from GitHub
+ */
+async function rebuildPackageIndex(): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
+  const storage = useStorage("cache");
+  const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
 
   // Get all letter directory SHAs
   const letterShas = await getLetterDirectoryShas();

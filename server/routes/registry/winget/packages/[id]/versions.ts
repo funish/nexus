@@ -71,7 +71,7 @@ export default defineCachedHandler(
     }
 
     // Build package index
-    const packageIndex = await buildPackageIndex();
+    const packageIndex = await buildPackageIndex(event);
     const versions = packageIndex.get(packageId);
 
     if (!versions) {
@@ -126,31 +126,57 @@ export default defineCachedHandler(
       // If building manifest map fails, continue without DefaultLocale
     }
 
-    // Build response with DefaultLocale for each version
-    const versionData: VersionSchema[] = [];
-    for (const version of Array.from(versions).sort().reverse()) {
-      let defaultLocale = "en-US"; // Fallback default
-      let channel: string | undefined = undefined;
+    // Build response with DefaultLocale for each version (parallel fetch)
+    const sortedVersions = Array.from(versions).sort().reverse();
 
-      // Try to get DefaultLocale from pre-built manifest map
+    // Parallel fetch all manifest contents for better performance
+    const manifestPromises = sortedVersions.map(async (version) => {
       const manifestPath = versionManifestMap.get(version);
-      if (manifestPath) {
-        try {
-          const content = await fetchManifestContent(manifestPath);
-          const manifest = parseYAML(content) as Record<string, any>;
-          defaultLocale = (manifest.DefaultLocale as string) || "en-US";
-          channel = manifest.Channel as string | undefined;
-        } catch {
-          // Keep fallback on error
-        }
+      if (!manifestPath) {
+        return {
+          version,
+          defaultLocale: "en-US",
+          channel: undefined,
+        };
       }
 
-      versionData.push({
-        PackageVersion: version,
-        DefaultLocale: defaultLocale,
-        ...(channel && { Channel: channel }),
-      });
-    }
+      try {
+        const content = await fetchManifestContent(manifestPath);
+        const manifest = parseYAML(content) as Record<string, any>;
+        return {
+          version,
+          defaultLocale: (manifest.DefaultLocale as string) || "en-US",
+          channel: manifest.Channel as string | undefined,
+        };
+      } catch {
+        return {
+          version,
+          defaultLocale: "en-US",
+          channel: undefined,
+        };
+      }
+    });
+
+    // Wait for all manifest fetches to complete
+    const manifestResults = await Promise.allSettled(manifestPromises);
+
+    // Build version data array
+    const versionData: VersionSchema[] = manifestResults.map((result, index) => {
+      const data =
+        result.status === "fulfilled"
+          ? result.value
+          : {
+              version: sortedVersions[index],
+              defaultLocale: "en-US",
+              channel: undefined,
+            };
+
+      return {
+        PackageVersion: data.version,
+        DefaultLocale: data.defaultLocale,
+        ...(data.channel && { Channel: data.channel }),
+      };
+    });
 
     const response: VersionMultipleResponse = {
       Data: versionData,

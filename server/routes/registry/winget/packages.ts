@@ -64,7 +64,7 @@ export default defineCachedHandler(
     const continuationToken = query.ContinuationToken as string | undefined;
 
     // Build package index from GitHub tree
-    const packageIndex = await buildPackageIndex();
+    const packageIndex = await buildPackageIndex(event);
 
     // Convert to array and sort
     const packages: WinGetPackage[] = Array.from(packageIndex.entries())

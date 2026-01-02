@@ -62,7 +62,7 @@ export default defineCachedHandler(
     }
 
     // Build package index
-    const packageIndex = await buildPackageIndex();
+    const packageIndex = await buildPackageIndex(event);
     const versions = packageIndex.get(packageId);
 
     if (!versions) {

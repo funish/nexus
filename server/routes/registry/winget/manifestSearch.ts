@@ -152,7 +152,7 @@ export default defineHandler(async (event) => {
   }
 
   // Build package index
-  const packageIndex = await buildPackageIndex();
+  const packageIndex = await buildPackageIndex(event);
   const results: ManifestSearchResponse[] = [];
 
   const { MaximumResults, Query } = searchRequest;

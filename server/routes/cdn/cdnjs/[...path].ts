@@ -52,6 +52,7 @@ function getCdnjsCacheControl(version: string): string {
 }
 
 // Get file from cache or fetch from GitHub
+// Returns immediately without blocking on cache write
 async function getCachedFile(
   library: string,
   version: string,
@@ -79,8 +80,10 @@ async function getCachedFile(
 
   const fileData = await fileRes.bytes();
 
-  // Store in cache for future requests
-  await storage.setItemRaw(cacheKey, fileData);
+  // Cache in background without blocking response
+  storage.setItemRaw(cacheKey, fileData).catch((err) => {
+    console.error(`Failed to cache cdnjs file:`, err);
+  });
 
   return fileData;
 }

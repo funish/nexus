@@ -44,6 +44,7 @@ function getWpCacheControl(isTrunk: boolean): string {
 
 /**
  * Fetch and cache a single file from WordPress SVN with jsDelivr fallback
+ * Returns immediately without blocking on cache write
  */
 async function fetchAndCacheFile(
   svnUrl: string,
@@ -62,7 +63,12 @@ async function fetchAndCacheFile(
   const response = await fetch(svnUrl);
   if (response.ok) {
     const data = await response.bytes();
-    await storage.setItemRaw(cacheKey, data);
+
+    // Cache in background without blocking response
+    storage.setItemRaw(cacheKey, data).catch((err) => {
+      console.error(`Failed to cache WordPress file:`, err);
+    });
+
     return data;
   }
 
@@ -71,7 +77,12 @@ async function fetchAndCacheFile(
     const jsDelivrResponse = await fetch(jsDelivrUrl);
     if (jsDelivrResponse.ok) {
       const data = await jsDelivrResponse.bytes();
-      await storage.setItemRaw(cacheKey, data);
+
+      // Cache in background without blocking response
+      storage.setItemRaw(cacheKey, data).catch((err) => {
+        console.error(`Failed to cache WordPress file:`, err);
+      });
+
       return data;
     }
   }

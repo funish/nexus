@@ -51,23 +51,38 @@ function getNpmCacheControl(version: string): string {
   return "public, max-age=31536000, immutable";
 }
 
-// Ensure all files from a package version are cached
-async function ensurePackageCached(packageName: string, version: string, tarballUrl: string) {
+// Check if package metadata is already cached
+async function isNpmPackageCached(packageName: string, version: string): Promise<boolean> {
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
 
-  // Skip cache when version is incomplete semver - always refetch
+  // Skip cache when version is incomplete semver
   if (!isCompleteSemver(version)) {
-    await storage.removeItem(cacheBase);
-  } else {
-    // For complete semver versions, check if already cached
-    const cachedMeta = await storage.getMeta(cacheBase);
-    if (cachedMeta?.files) {
-      return;
-    }
+    return false;
   }
 
-  // Download and extract tarball
+  // For complete semver versions, check if already cached
+  const cachedMeta = await storage.getMeta(cacheBase);
+  return !!cachedMeta?.files;
+}
+
+// Get a single file from cache or fetch from tarball
+async function getOrCacheNpmFile(
+  packageName: string,
+  version: string,
+  tarballUrl: string,
+  filepath: string,
+): Promise<Uint8Array> {
+  const storage = useStorage("cache");
+  const cacheKey = `cdn/npm/${packageName}/${version}/${filepath}`;
+
+  // Try cache first
+  const cached = await storage.getItemRaw(cacheKey);
+  if (cached) {
+    return new Uint8Array(cached);
+  }
+
+  // Cache miss - download and extract tarball to get the file
   const tarballRes = await fetch(tarballUrl);
   if (!tarballRes.ok) {
     throw new HTTPError({
@@ -84,43 +99,82 @@ async function ensurePackageCached(packageName: string, version: string, tarball
   const rootDir = firstFile?.name.split("/")[0] || "package";
   const rootPath = `${rootDir}/`;
 
-  // Build file list
-  const fileList: Array<CdnFile> = [];
+  // Find and return the requested file
+  const targetFile = files.find((f) => {
+    if (f.type !== "file" || !f.data) return false;
+    const relativePath = f.name.slice(rootPath.length);
+    return relativePath === filepath;
+  });
 
-  // Cache all files
-  for (const file of files) {
-    if (file.type === "file" && file.data) {
-      // Remove root directory from path
-      const relativePath = file.name.slice(rootPath.length);
-      const cacheKey = `${cacheBase}/${relativePath}`;
-      await storage.setItemRaw(cacheKey, file.data);
-
-      fileList.push({
-        name: relativePath,
-        size: file.size || 0,
-      });
-    }
+  if (!targetFile?.data) {
+    throw new HTTPError({
+      status: 404,
+      statusText: `File not found: ${filepath}`,
+    });
   }
 
-  // Store file list in meta
-  await storage.setMeta(cacheBase, { files: fileList });
+  return targetFile.data;
 }
 
-// Get a single file from cache
-async function getCachedFile(
+// Background task to cache all files from an npm package version
+async function cacheNpmPackageInBackground(
   packageName: string,
   version: string,
-  filepath: string,
-): Promise<Uint8Array | null> {
-  const storage = useStorage("cache");
-  const cacheKey = `cdn/npm/${packageName}/${version}/${filepath}`;
-  const cached = await storage.getItemRaw(cacheKey);
+  tarballUrl: string,
+) {
+  try {
+    const storage = useStorage("cache");
+    const cacheBase = `cdn/npm/${packageName}/${version}`;
 
-  if (!cached) {
-    return null;
+    // Check if already cached
+    const cachedMeta = await storage.getMeta(cacheBase);
+    if (cachedMeta?.files) {
+      return; // Already cached
+    }
+
+    // Download and extract tarball
+    const tarballRes = await fetch(tarballUrl);
+    if (!tarballRes.ok) {
+      console.error(`Failed to download npm tarball for ${packageName}@${version}`);
+      return;
+    }
+
+    const tarballData = await tarballRes.bytes();
+    const files = await parseTarGzip(tarballData);
+
+    // Determine root directory in tarball
+    const firstFile = files[0];
+    const rootDir = firstFile?.name.split("/")[0] || "package";
+    const rootPath = `${rootDir}/`;
+
+    // Build file list
+    const fileList: Array<CdnFile> = [];
+
+    // Cache all files
+    for (const file of files) {
+      if (file.type === "file" && file.data) {
+        // Remove root directory from path
+        const relativePath = file.name.slice(rootPath.length);
+        const cacheKey = `${cacheBase}/${relativePath}`;
+
+        // Check if already cached to avoid duplicate writes
+        const exists = await storage.getItemRaw(cacheKey);
+        if (!exists) {
+          await storage.setItemRaw(cacheKey, file.data);
+        }
+
+        fileList.push({
+          name: relativePath,
+          size: file.size || 0,
+        });
+      }
+    }
+
+    // Store file list in meta
+    await storage.setMeta(cacheBase, { files: fileList });
+  } catch (error) {
+    console.error(`Background cache failed for ${packageName}@${version}:`, error);
   }
-
-  return new Uint8Array(cached);
 }
 
 /**
@@ -225,17 +279,28 @@ export default defineHandler(async (event) => {
     });
   }
 
-  // Download tarball and cache all files
+  // Download tarball info
   const tarballUrl = versionInfo.dist.tarball;
-  await ensurePackageCached(packageName, version, tarballUrl);
 
   const storage = useStorage("cache");
   const cacheBase = `cdn/npm/${packageName}/${version}`;
+
+  // Check if entire package is already cached
+  const isCached = await isNpmPackageCached(packageName, version);
 
   // Special handling for package root access
   if (!filepath) {
     if (hasTrailingSlash) {
       // /cdn/npm/uikit/ -> list directory contents with metadata
+      // If not cached, trigger background caching and return error
+      if (!isCached) {
+        event.waitUntil(cacheNpmPackageInBackground(packageName, version, tarballUrl));
+        throw new HTTPError({
+          status: 404,
+          statusText: "Package not yet cached. Please try again in a moment.",
+        });
+      }
+
       const meta = await storage.getMeta(cacheBase);
       const fileList = (meta?.files || []) as Array<CdnFile>;
 
@@ -258,13 +323,11 @@ export default defineHandler(async (event) => {
       // Priority: browser > main > module > index.js
       let entryFile = versionInfo.browser || versionInfo.main || versionInfo.module || "index.js";
 
-      const fileData = await getCachedFile(packageName, version, entryFile);
+      const fileData = await getOrCacheNpmFile(packageName, version, tarballUrl, entryFile);
 
-      if (!fileData) {
-        throw new HTTPError({
-          status: 404,
-          statusText: `Entry file not found: ${entryFile}`,
-        });
+      // Trigger background caching for entire package
+      if (!isCached) {
+        event.waitUntil(cacheNpmPackageInBackground(packageName, version, tarballUrl));
       }
 
       const contentType = getContentType(entryFile);
@@ -276,52 +339,69 @@ export default defineHandler(async (event) => {
     }
   }
 
-  // For non-root paths, try to get file from cache
-  const fileData = await getCachedFile(packageName, version, filepath);
+  // For non-root paths, try to get file from cache or tarball
+  try {
+    const fileData = await getOrCacheNpmFile(packageName, version, tarballUrl, filepath);
 
-  // If file found, return content
-  if (fileData) {
+    // Trigger background caching for entire package
+    if (!isCached) {
+      event.waitUntil(cacheNpmPackageInBackground(packageName, version, tarballUrl));
+    }
+
+    // Return file content
     const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
     event.res.headers.set("Cache-Control", getNpmCacheControl(version));
 
     return Buffer.from(fileData);
+  } catch (error) {
+    // If file not found, try to list as directory
+    if ((error as HTTPError).statusCode === 404) {
+      // Package must be cached to list directories
+      if (!isCached) {
+        throw new HTTPError({
+          status: 404,
+          statusText: `Path not found: ${filepath}. Package not yet cached.`,
+        });
+      }
+
+      const meta = await storage.getMeta(cacheBase);
+      const allFiles =
+        (meta?.files as Array<{ name: string; type: string; size: number }> | undefined) || [];
+
+      // Filter files by directory prefix
+      const dirPrefix = `${filepath}/`;
+      const dirContents: CdnFile[] = allFiles
+        .filter((file: { name: string }) => file.name.startsWith(dirPrefix))
+        .map((file: { name: string; size: number }) => ({
+          name: file.name.slice(dirPrefix.length),
+          size: file.size,
+        }))
+        .filter((file: { name: string }) => file.name.length > 0);
+
+      if (dirContents.length === 0) {
+        throw new HTTPError({
+          status: 404,
+          statusText: `Path not found: ${filepath}`,
+        });
+      }
+
+      dirContents.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+
+      event.res.headers.set("Content-Type", "application/json");
+      event.res.headers.set("Cache-Control", "public, max-age=600");
+
+      const response: CdnPackageListing = {
+        name: metadata.name,
+        version: version,
+        path: filepath,
+        files: dirContents,
+      };
+
+      return response;
+    }
+
+    throw error;
   }
-
-  // If file not found, try to list as directory
-  const meta = await storage.getMeta(cacheBase);
-  const allFiles =
-    (meta?.files as Array<{ name: string; type: string; size: number }> | undefined) || [];
-
-  // Filter files by directory prefix
-  const dirPrefix = `${filepath}/`;
-  const dirContents: CdnFile[] = allFiles
-    .filter((file: { name: string }) => file.name.startsWith(dirPrefix))
-    .map((file: { name: string; size: number }) => ({
-      name: file.name.slice(dirPrefix.length),
-      size: file.size,
-    }))
-    .filter((file: { name: string }) => file.name.length > 0);
-
-  if (dirContents.length === 0) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Path not found: ${filepath}`,
-    });
-  }
-
-  dirContents.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
-
-  event.res.headers.set("Content-Type", "application/json");
-  event.res.headers.set("Cache-Control", "public, max-age=600");
-
-  const response: CdnPackageListing = {
-    name: metadata.name,
-    version: version,
-    path: filepath,
-    files: dirContents,
-  };
-
-  return response;
 });

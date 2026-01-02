@@ -43,13 +43,13 @@ export interface GitHubTreeResponse {
 
 /**
  * Package identifier in WinGet format
- * Example: ByteDance.Doubao
+ * Example: Microsoft.VisualStudioCode
  */
 export type PackageIdentifier = string;
 
 /**
  * Package version
- * Example: 1.46.7
+ * Example: 1.95.0
  */
 export type PackageVersion = string;
 
@@ -201,12 +201,197 @@ export interface ManifestSearchResult {
 }
 
 /**
- * Fetch and cache GitHub tree data
- * Updates every 10 minutes (600 seconds)
+ * Fetch GitHub tree data by SHA or branch
+ * @param treeSha - The SHA of the tree or branch name
+ * @param recursive - Whether to fetch recursively (default: false)
  */
-export async function getGitHubTree(): Promise<GitHubTreeResponse> {
+export async function getGitHubTree(
+  treeSha: string = GITHUB_BRANCH,
+  recursive: boolean = false,
+): Promise<GitHubTreeResponse> {
+  // Fetch from GitHub API
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
+  const response = await fetch(url, {
+    headers: getGitHubHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch GitHub tree: ${response.statusText}`);
+  }
+
+  return (await response.json()) as GitHubTreeResponse;
+}
+
+/**
+ * Fetch and cache GitHub tree paths (optimized storage)
+ * @param treeSha - The SHA of the tree
+ * @param cacheSuffix - Cache suffix for this tree
+ * @returns Array of file paths
+ */
+export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): Promise<string[]> {
   const storage = useStorage("cache");
-  const cacheKey = `registry/winget/${GITHUB_REPO}/${GITHUB_BRANCH}`;
+  // Replace slashes with dashes to avoid filesystem nesting issues
+  const normalizedSuffix = cacheSuffix.replace(/\//g, "-");
+  const cacheKey = `registry/winget/${GITHUB_REPO}/${normalizedSuffix}`;
+  const UPDATE_INTERVAL = 600; // 10 minutes
+
+  // Check cache metadata
+  const meta = await storage.getMeta(cacheKey);
+  const now = new Date();
+
+  // If cache exists and is within update interval, return it
+  if (meta?.mtime) {
+    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
+    if (cacheAge < UPDATE_INTERVAL) {
+      const cached = await storage.getItem(cacheKey);
+      if (cached && Array.isArray(cached)) {
+        return cached as string[];
+      }
+    }
+  }
+
+  // Fetch tree data
+  const treeData = await getGitHubTree(treeSha, true);
+
+  // Extract only paths from tree items
+  const paths = treeData.tree.map((item) => item.path);
+
+  // Cache the paths array
+  await storage.setItem(cacheKey, paths);
+  await storage.setMeta(cacheKey, { mtime: new Date() });
+
+  return paths;
+}
+
+/**
+ * Filter tree to only include manifest files
+ */
+export function filterManifestFiles(tree: GitHubTreeItem[]): GitHubTreeItem[] {
+  return tree.filter((item) => item.path.startsWith("manifests/"));
+}
+
+/**
+ * Get the SHA of the manifests directory
+ */
+export async function getManifestsSha(): Promise<string> {
+  const storage = useStorage("cache");
+  const manifestsShaKey = `registry/winget/${GITHUB_REPO}/manifests-sha`;
+  const UPDATE_INTERVAL = 600; // 10 minutes
+
+  // Check cache metadata
+  const meta = await storage.getMeta(manifestsShaKey);
+  const now = new Date();
+
+  // If cache exists and is within update interval, return it
+  if (meta?.mtime) {
+    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
+    if (cacheAge < UPDATE_INTERVAL) {
+      const cached = await storage.getItem(manifestsShaKey);
+      if (cached && typeof cached === "string") {
+        return cached;
+      }
+    }
+  }
+
+  // Fetch root tree
+  const rootTree = await getGitHubTree(GITHUB_BRANCH, false);
+  const manifestsItem = rootTree.tree.find(
+    (item) => item.path === "manifests" && item.type === "tree",
+  );
+
+  if (!manifestsItem) {
+    throw new Error("manifests directory not found in repository");
+  }
+
+  // Cache the SHA
+  await storage.setItem(manifestsShaKey, manifestsItem.sha);
+  await storage.setMeta(manifestsShaKey, { mtime: new Date() });
+
+  return manifestsItem.sha;
+}
+
+/**
+ * Get all letter directory SHAs from manifests
+ */
+export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
+  const manifestsSha = await getManifestsSha();
+  const manifestsTree = await getGitHubTree(manifestsSha, false);
+
+  const letterShas = new Map<string, string>();
+
+  for (const item of manifestsTree.tree) {
+    // Match single letter directories (a-z, 0-9)
+    if (item.type === "tree" && item.path.length === 1 && /[a-z0-9]/.test(item.path)) {
+      letterShas.set(item.path, item.sha);
+    }
+  }
+
+  if (letterShas.size === 0) {
+    throw new Error("No letter directories found in manifests");
+  }
+
+  return letterShas;
+}
+
+/**
+ * Parse package identifier from manifest path
+ * manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
+ * → Microsoft.VisualStudioCode
+ *
+ * Note: When fetching from letter directory, path is relative:
+ * Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
+ * → Microsoft.VisualStudioCode
+ */
+export function parsePackageIdentifier(path: string): PackageIdentifier | null {
+  // Try full path first: manifests/a/publisher/name/...
+  let match = path.match(/^manifests\/[a-z0-9]\/([^/]+)\/([^/]+)\//);
+  if (match) {
+    const [, publisher, name] = match;
+    return `${publisher}.${name}`;
+  }
+
+  // Try relative path: publisher/name/...
+  match = path.match(/^([^/]+)\/([^/]+)\//);
+  if (match) {
+    const [, publisher, name] = match;
+    return `${publisher}.${name}`;
+  }
+
+  return null;
+}
+
+/**
+ * Parse version from manifest path
+ * manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
+ * → 1.95.0
+ *
+ * Note: When fetching from letter directory, path is relative:
+ * Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
+ * → 1.95.0
+ */
+export function parseVersion(path: string): PackageVersion | null {
+  // Try full path first: manifests/a/publisher/name/version/...
+  let match = path.match(/^manifests\/[a-z0-9]\/[^/]+\/[^/]+\/([^/]+)\//);
+  if (match && match[1]) {
+    return match[1];
+  }
+
+  // Try relative path: publisher/name/version/...
+  match = path.match(/^[^/]+\/[^/]+\/([^/]+)\//);
+  if (match && match[1]) {
+    return match[1];
+  }
+
+  return null;
+}
+
+/**
+ * Build package index from tree data
+ * Map<PackageIdentifier, Set<Version>>
+ */
+export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
+  const storage = useStorage("cache");
+  const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
   const UPDATE_INTERVAL = 600; // 10 minutes
 
   // Check cache metadata
@@ -219,76 +404,47 @@ export async function getGitHubTree(): Promise<GitHubTreeResponse> {
     if (cacheAge < UPDATE_INTERVAL) {
       const cached = await storage.getItem(cacheKey);
       if (cached) {
-        return cached as GitHubTreeResponse;
+        // Convert cached object back to Map with Set values
+        const cachedData = cached as Record<string, string[]>;
+        const index = new Map<PackageIdentifier, Set<PackageVersion>>();
+        for (const [pkgId, versions] of Object.entries(cachedData)) {
+          index.set(pkgId, new Set(versions));
+        }
+        return index;
       }
     }
   }
 
-  // Fetch from GitHub API
-  const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/git/trees/${GITHUB_BRANCH}?recursive=1`;
-  const response = await fetch(url, {
-    headers: getGitHubHeaders(),
+  // Get all letter directory SHAs
+  const letterShas = await getLetterDirectoryShas();
+
+  // Fetch all letter directory paths in parallel
+  const letterPromises = Array.from(letterShas.entries()).map(async ([letter, sha]) => {
+    try {
+      const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
+      return { letter, paths };
+    } catch (error) {
+      console.error(`Failed to fetch tree for letter ${letter}:`, error);
+      return null;
+    }
   });
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch GitHub tree: ${response.statusText}`);
-  }
+  const letterResults = await Promise.all(letterPromises);
 
-  const data = (await response.json()) as GitHubTreeResponse;
-
-  // Cache the response and set metadata with current time
-  await storage.setItem(cacheKey, data);
-  await storage.setMeta(cacheKey, { mtime: new Date() });
-
-  return data;
-}
-
-/**
- * Filter tree to only include manifest files
- */
-export function filterManifestFiles(tree: GitHubTreeItem[]): GitHubTreeItem[] {
-  return tree.filter((item) => item.path.startsWith("manifests/"));
-}
-
-/**
- * Parse package identifier from manifest path
- * manifests/b/ByteDance/Doubao/1.46.7/ByteDance.Doubao.yaml
- * → ByteDance.Doubao
- */
-export function parsePackageIdentifier(path: string): PackageIdentifier | null {
-  const match = path.match(/^manifests\/[a-z]\/([^/]+)\/([^/]+)\//);
-  if (!match) return null;
-
-  const [, publisher, name] = match;
-  return `${publisher}.${name}`;
-}
-
-/**
- * Parse version from manifest path
- * manifests/b/ByteDance/Doubao/1.46.7/ByteDance.Doubao.yaml
- * → 1.46.7
- */
-export function parseVersion(path: string): PackageVersion | null {
-  const match = path.match(/^manifests\/[a-z]\/[^/]+\/[^/]+\/([^/]+)\//);
-  if (!match || !match[1]) return null;
-
-  return match[1];
-}
-
-/**
- * Build package index from tree data
- * Map<PackageIdentifier, Set<Version>>
- */
-export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
-  const tree = await getGitHubTree();
-  const manifestFiles = filterManifestFiles(tree.tree);
-
+  // Build index from all letter paths
   const index = new Map<PackageIdentifier, Set<PackageVersion>>();
 
-  for (const file of manifestFiles) {
-    if (file.type === "blob" && file.path.endsWith(".yaml")) {
-      const pkgId = parsePackageIdentifier(file.path);
-      const version = parseVersion(file.path);
+  for (const result of letterResults) {
+    if (!result) continue;
+
+    const { paths } = result;
+
+    for (const path of paths) {
+      // Only process YAML files
+      if (!path.endsWith(".yaml")) continue;
+
+      const pkgId = parsePackageIdentifier(path);
+      const version = parseVersion(path);
 
       if (pkgId && version) {
         if (!index.has(pkgId)) {
@@ -298,6 +454,16 @@ export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<Pa
       }
     }
   }
+
+  // Convert to plain object for caching
+  const cacheData: Record<string, string[]> = {};
+  for (const [pkgId, versions] of index.entries()) {
+    cacheData[pkgId] = Array.from(versions);
+  }
+
+  // Cache the index and set metadata
+  await storage.setItem(cacheKey, cacheData);
+  await storage.setMeta(cacheKey, { mtime: new Date() });
 
   return index;
 }
@@ -309,9 +475,6 @@ export async function getVersionManifests(
   packageId: PackageIdentifier,
   version: PackageVersion,
 ): Promise<GitHubTreeItem[]> {
-  const tree = await getGitHubTree();
-  const manifestFiles = filterManifestFiles(tree.tree);
-
   const parts = packageId.split(".");
   if (parts.length < 2) {
     return [];
@@ -327,9 +490,22 @@ export async function getVersionManifests(
     return [];
   }
 
-  const pathPrefix = `manifests/${firstChar.toLowerCase()}/${publisher}/${name}/${version}/`;
+  const letter = firstChar.toLowerCase();
 
-  return manifestFiles.filter((item) => item.path.startsWith(pathPrefix) && item.type === "blob");
+  // Get all letter directory SHAs
+  const letterShas = await getLetterDirectoryShas();
+  const sha = letterShas.get(letter);
+
+  if (!sha) {
+    return [];
+  }
+
+  // Get the full tree (we need GitHubTreeItem[], not just paths)
+  const tree = await getGitHubTree(sha, true);
+
+  const pathPrefix = `${publisher}/${name}/${version}/`;
+
+  return tree.tree.filter((item) => item.path.startsWith(pathPrefix) && item.type === "blob");
 }
 
 /**

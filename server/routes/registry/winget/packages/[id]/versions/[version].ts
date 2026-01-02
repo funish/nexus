@@ -89,7 +89,7 @@ export default defineCachedHandler(
           response.LocaleManifests = {};
         }
 
-        // Extract locale code: ByteDance.Doubao.locale.en-US.yaml → en-US
+        // Extract locale code: Microsoft.VisualStudioCode.locale.en-US.yaml → en-US
         const localeMatch = filename.match(/\.locale\.([^.]+)\.yaml$/);
         if (localeMatch && localeMatch[1]) {
           const locale = localeMatch[1];

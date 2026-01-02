@@ -1,25 +1,10 @@
 import type { H3Event } from "nitro/h3";
 import { useStorage } from "nitro/storage";
+import { env } from "std-env";
 
 const GITHUB_REPO = "microsoft/winget-pkgs";
 const GITHUB_BRANCH = "master";
 const GITHUB_API_BASE = "https://api.github.com";
-
-/**
- * Get GitHub authentication headers if token is available
- */
-function getGitHubHeaders(): HeadersInit {
-  const token = process.env.GITHUB_TOKEN;
-  const headers: HeadersInit = {
-    "User-Agent": "Funish Nexus",
-  };
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  return headers;
-}
 
 /**
  * WinGet Registry types and utilities
@@ -69,8 +54,9 @@ export interface WinGetPackage {
  * Single package response
  */
 export interface PackageSingleResponse {
-  PackageIdentifier: PackageIdentifier;
-  Versions: PackageVersion[];
+  Data: {
+    PackageIdentifier: PackageIdentifier;
+  };
 }
 
 /**
@@ -265,6 +251,22 @@ export interface ManifestSearchResult {
   Data: ManifestSearchResponse[];
   RequiredPackageMatchFields?: PackageMatchField[];
   UnsupportedPackageMatchFields?: PackageMatchField[];
+}
+
+/**
+ * Get GitHub authentication headers if token is available
+ */
+export function getGitHubHeaders(): HeadersInit {
+  const token = env.GITHUB_TOKEN;
+  const headers: HeadersInit = {
+    "User-Agent": "Funish Nexus",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
 }
 
 /**

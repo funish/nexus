@@ -35,4 +35,5 @@ export default defineConfig({
       base: ".cache",
     },
   },
+  compatibilityDate: "2025-12-31",
 });

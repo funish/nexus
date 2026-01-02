@@ -73,8 +73,9 @@ export default defineCachedHandler(
     }
 
     const response: PackageSingleResponse = {
-      PackageIdentifier: packageId,
-      Versions: Array.from(versions).sort().reverse(),
+      Data: {
+        PackageIdentifier: packageId,
+      },
     };
 
     event.res.headers.set("Content-Type", "application/json");

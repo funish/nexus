@@ -305,12 +305,9 @@ export default defineHandler(async (event) => {
   if (!filepath) {
     if (hasTrailingSlash) {
       // /cdn/jsr/@luca/flag/ -> list directory contents with metadata
-      // If not cached, trigger background caching and return error
+      // If not cached, wait for entire package to be cached
       if (!isCached) {
-        throw new HTTPError({
-          status: 404,
-          statusText: "Package not yet cached. Please try again in a moment.",
-        });
+        await cacheJsrPackageInBackground(packageName, version, tarballUrl);
       }
 
       const meta = await storage.getMeta(cacheBase);

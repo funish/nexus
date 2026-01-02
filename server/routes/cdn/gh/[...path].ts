@@ -304,13 +304,9 @@ export default defineHandler(async (event) => {
   if (!filepath) {
     if (hasTrailingSlash) {
       // /cdn/gh/vuejs/core/ -> list directory contents
-      // If not cached, trigger background caching and return partial list
+      // If not cached, wait for entire package to be cached
       if (!isCached) {
-        event.waitUntil(cacheGitHubPackageInBackground(owner, repo, version));
-        throw new HTTPError({
-          status: 404,
-          statusText: "Package not yet cached. Please try again in a moment.",
-        });
+        await cacheGitHubPackageInBackground(owner, repo, version);
       }
 
       const meta = await storage.getMeta(cacheBase);

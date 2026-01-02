@@ -177,7 +177,6 @@ export default defineHandler(async (event) => {
       Versions: Array.from(versions)
         .sort()
         .reverse()
-        .slice(0, 10) // Limit to 10 versions
         .map((version) => ({
           PackageVersion: version,
         })),

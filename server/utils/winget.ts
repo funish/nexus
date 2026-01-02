@@ -484,12 +484,13 @@ export async function buildPackageIndex(): Promise<Map<PackageIdentifier, Set<Pa
 }
 
 /**
- * Get all manifest files for a specific version
+ * Get all manifest file paths for a specific version
+ * @returns Array of manifest file paths (full repository paths)
  */
 export async function getVersionManifests(
   packageId: PackageIdentifier,
   version: PackageVersion,
-): Promise<GitHubTreeItem[]> {
+): Promise<string[]> {
   const parts = packageId.split(".");
   if (parts.length < 2) {
     return [];
@@ -515,12 +516,13 @@ export async function getVersionManifests(
     return [];
   }
 
-  // Get the full tree (we need GitHubTreeItem[], not just paths)
-  const tree = await getGitHubTree(sha, true);
-
+  // Reuse cached paths (consistent with buildPackageIndex)
+  const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
   const pathPrefix = `${publisher}/${name}/${version}/`;
 
-  return tree.tree.filter((item) => item.path.startsWith(pathPrefix) && item.type === "blob");
+  return paths
+    .filter((path) => path.startsWith(pathPrefix) && path.endsWith(".yaml"))
+    .map((path) => `manifests/${letter}/${path}`);
 }
 
 /**
@@ -538,9 +540,7 @@ export async function fetchManifestContent(manifestPath: string): Promise<string
 
   // Cache miss - fetch from GitHub
   const rawUrl = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${manifestPath}`;
-  const response = await fetch(rawUrl, {
-    headers: getGitHubHeaders(),
-  });
+  const response = await fetch(rawUrl);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch manifest: ${response.statusText}`);

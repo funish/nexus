@@ -72,13 +72,13 @@ export default defineCachedHandler(
     };
 
     // Parse manifest files
-    for (const file of manifestFiles) {
-      const filename = file.path.split("/").pop()!;
+    for (const manifestPath of manifestFiles) {
+      const filename = manifestPath.split("/").pop()!;
 
       if (filename === `${packageId}.yaml`) {
         // Main manifest
         try {
-          const content = await fetchManifestContent(file.path);
+          const content = await fetchManifestContent(manifestPath);
           response.Manifest = parseYAML(content);
         } catch {
           // Skip if parsing fails
@@ -94,7 +94,7 @@ export default defineCachedHandler(
         if (localeMatch && localeMatch[1]) {
           const locale = localeMatch[1];
           try {
-            const content = await fetchManifestContent(file.path);
+            const content = await fetchManifestContent(manifestPath);
             response.LocaleManifests[locale] = parseYAML(content);
           } catch {
             // Skip if parsing fails
@@ -103,7 +103,7 @@ export default defineCachedHandler(
       } else if (filename === `${packageId}.installer.yaml`) {
         // Installer manifest
         try {
-          const content = await fetchManifestContent(file.path);
+          const content = await fetchManifestContent(manifestPath);
           response.InstallerManifest = parseYAML(content);
         } catch {
           // Skip if parsing fails
@@ -117,7 +117,6 @@ export default defineCachedHandler(
   },
   {
     maxAge: 3600,
-    swr: true,
     group: "registry:winget",
   },
 );

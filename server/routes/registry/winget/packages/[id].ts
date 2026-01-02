@@ -83,7 +83,6 @@ export default defineCachedHandler(
   },
   {
     maxAge: 600,
-    swr: true,
     group: "registry:winget",
   },
 );

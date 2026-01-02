@@ -118,7 +118,6 @@ export default defineCachedHandler(
   },
   {
     maxAge: 600,
-    swr: true,
     group: "mirror",
   },
 );

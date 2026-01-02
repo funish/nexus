@@ -92,10 +92,10 @@ Access WordPress resources from SVN:
 
 ```bash
 # Plugin from tags
-curl https://nexus.funish.net/cdn/wp/plugins/akismet/tags/5.3/akismet.js
+curl https://nexus.funish.net/cdn/wp/plugins/wp-slimstat/tags/4.6.5/wp-slimstat.js
 
 # Plugin from trunk (latest development)
-curl https://nexus.funish.net/cdn/wp/plugins/akismet/trunk/akismet.js
+curl https://nexus.funish.net/cdn/wp/plugins/wp-slimstat/trunk/wp-slimstat.js
 
 # Theme
 curl https://nexus.funish.net/cdn/wp/themes/twentytwentyfour/1.0/style.css

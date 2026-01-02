@@ -10,7 +10,7 @@
 - 🪟 **WinGet Registry** - Complete Windows Package Manager mirror with search, package metadata, and version information
 - 📦 **Universal CDN** - Access packages from npm, GitHub, JSR, cdnjs, WordPress, and more
 - 🔄 **Registry Mirror** - Proxy requests to 40+ package registries (PyPI, crates.io, Go, Maven, Docker, etc.)
-- 📚 **OpenAPI Documentation** - Interactive API docs at `/_docs/scalar` and `/_docs/swagger`
+- 📚 **OpenAPI Documentation** - Interactive API docs available at `/_docs/scalar`, `/_docs/swagger`, and `/_docs/openapi.json`
 
 ## Usage
 
@@ -246,57 +246,43 @@ repositories {
 
 ### WinGet Registry
 
-WinGet endpoint provides a complete mirror of the Windows Package Manager registry.
+Complete Windows Package Manager registry mirror, compliant with [WinGet RESTSource API 1.9.0](https://github.com/microsoft/winget-cli-restsource/blob/main/documentation/WinGet-1.9.0.yaml) specification.
 
-#### List All Packages
-
-```bash
-curl https://nexus.funish.net/registry/winget/packages
-```
-
-**Response:**
-
-```json
-{
-  "Data": [
-    {
-      "PackageIdentifier": "Microsoft.VisualStudioCode",
-      "Versions": ["1.95.0", "1.94.0", "..."]
-    }
-  ],
-  "ContinuationToken": "..."
-}
-```
-
-#### Get Package Details
+**Available endpoints:**
 
 ```bash
-curl https://nexus.funish.net/registry/winget/packages/Microsoft.VisualStudioCode
+# List all packages
+GET /registry/winget/packages
+
+# Get package details
+GET /registry/winget/packages/{id}
+
+# Search packages
+GET /registry/winget/manifestSearch?query={query}&matchType={CaseInsensitive|Exact|Fuzzy}
+
+# Get package versions
+GET /registry/winget/packages/{id}/versions
+
+# Get specific version
+GET /registry/winget/packages/{id}/versions/{version}
+
+# Get all locales for a version
+GET /registry/winget/packages/{id}/versions/{version}/locales
+
+# Get specific locale
+GET /registry/winget/packages/{id}/versions/{version}/locales/{locale}
+
+# Get all installers for a version
+GET /registry/winget/packages/{id}/versions/{version}/installers
+
+# Get specific installer
+GET /registry/winget/packages/{id}/versions/{version}/installers/{installer}
 ```
 
-#### Search Packages
-
-```bash
-# Case-insensitive search
-curl "https://nexus.funish.net/registry/winget/manifestSearch?query=Adobe&matchType=CaseInsensitive"
-
-# Exact match
-curl "https://nexus.funish.net/registry/winget/manifestSearch?query=Microsoft.VisualStudioCode&matchType=Exact"
-
-# Fuzzy search
-curl "https://nexus.funish.net/registry/winget/manifestSearch?query=VSCode&matchType=Fuzzy"
-```
-
-#### Get Package Versions
+**Example:**
 
 ```bash
 curl https://nexus.funish.net/registry/winget/packages/Microsoft.VisualStudioCode/versions
-```
-
-#### Get Specific Version
-
-```bash
-curl https://nexus.funish.net/registry/winget/packages/Microsoft.VisualStudioCode/versions/1.95.0
 ```
 
 ### API Documentation

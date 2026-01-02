@@ -22,7 +22,7 @@ function getGitHubHeaders(): HeadersInit {
 
 /**
  * WinGet Registry types and utilities
- * Based on WinGet.RestSource OpenAPI specification v1.1.0
+ * Based on WinGet.RestSource OpenAPI specification v1.9.0
  */
 
 /**
@@ -81,30 +81,93 @@ export interface PackageMultipleResponse {
 }
 
 /**
- * Version metadata
+ * Version Schema (WinGet 1.9.0)
+ */
+export interface VersionSchema {
+  PackageVersion: PackageVersion;
+  DefaultLocale: string;
+  Channel?: string;
+}
+
+/**
+ * Single version response (WinGet 1.9.0)
+ * ResponseObjectSchema + Data: VersionSchema
+ */
+export interface VersionSingleResponse {
+  Data: VersionSchema;
+}
+
+/**
+ * Multiple versions response (WinGet 1.9.0)
+ * ResponseObjectSchema + Data: VersionSchema[]
+ */
+export interface VersionMultipleResponse {
+  Data: VersionSchema[];
+  ContinuationToken?: string;
+}
+
+/**
+ * Locale Schema (WinGet 1.9.0)
+ */
+export interface LocaleSchema {
+  PackageLocale: string;
+  Publisher?: string;
+  PackageName?: string;
+  ShortDescription?: string;
+  Description?: string;
+}
+
+/**
+ * Single locale response (WinGet 1.9.0)
+ */
+export interface LocaleSingleResponse {
+  Data: LocaleSchema;
+}
+
+/**
+ * Multiple locales response (WinGet 1.9.0)
+ */
+export interface LocaleMultipleResponse {
+  Data: LocaleSchema[];
+  ContinuationToken?: string;
+}
+
+/**
+ * Installer Schema (WinGet 1.9.0)
+ */
+export interface InstallerSchema {
+  InstallerIdentifier?: string;
+  InstallerType?: string;
+  InstallerUrl?: string;
+  Architecture?: string;
+  Scope?: string;
+  Language?: string;
+}
+
+/**
+ * Single installer response (WinGet 1.9.0)
+ */
+export interface InstallerSingleResponse {
+  Data: InstallerSchema;
+}
+
+/**
+ * Multiple installers response (WinGet 1.9.0)
+ */
+export interface InstallerMultipleResponse {
+  Data: InstallerSchema[];
+  ContinuationToken?: string;
+}
+
+/**
+ * @deprecated Use VersionSchema instead
+ * Kept for backward compatibility
  */
 export interface WinGetVersion {
   PackageVersion: PackageVersion;
   DefaultLocale?: string;
   Locales?: string[];
   Installers?: string[];
-}
-
-/**
- * Single version response with manifest content
- */
-export interface VersionSingleResponse extends WinGetVersion {
-  Manifest?: ManifestContent;
-  LocaleManifests?: Record<string, ManifestContent>;
-  InstallerManifest?: ManifestContent;
-}
-
-/**
- * Multiple versions response (with pagination)
- */
-export interface VersionMultipleResponse {
-  Data: WinGetVersion[];
-  ContinuationToken?: string;
 }
 
 /**

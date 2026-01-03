@@ -1,5 +1,9 @@
 import { defineConfig } from "nitro/config";
 import pkg from "./package.json";
+import { provider } from "std-env";
+
+// Dynamically select storage driver based on deployment environment
+const isCloudflare = provider === "cloudflare_pages" || provider === "cloudflare_workers";
 
 export default defineConfig({
   serverDir: "./server/",
@@ -26,7 +30,12 @@ export default defineConfig({
   },
   storage: {
     cache: {
-      driver: "memory",
+      // Use Cloudflare KV in Cloudflare environments, memory otherwise
+      driver: isCloudflare ? "cloudflare-kv" : "memory",
+      // KV binding configuration (only applied in Cloudflare environments)
+      ...(isCloudflare && {
+        binding: "CACHE",
+      }),
     },
   },
   devStorage: {
@@ -35,5 +44,19 @@ export default defineConfig({
       base: ".cache",
     },
   },
+  // Cloudflare bindings configuration (only applied in Cloudflare environments)
+  ...(isCloudflare && {
+    cloudflare: {
+      wrangler: {
+        kv_namespaces: [
+          {
+            binding: "CACHE",
+            id: process.env.CLOUDFLARE_KV_CACHE_ID || "",
+            preview_id: process.env.CLOUDFLARE_KV_CACHE_PREVIEW_ID || "",
+          },
+        ],
+      },
+    },
+  }),
   compatibilityDate: "2025-12-31",
 });

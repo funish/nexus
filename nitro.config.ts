@@ -3,7 +3,9 @@ import pkg from "./package.json";
 import { provider, env } from "std-env";
 
 // Dynamically select storage driver based on deployment environment
-const isCloudflare = provider === "cloudflare_pages" || provider === "cloudflare_workers";
+const isCloudflare =
+  (provider === "cloudflare_pages" || provider === "cloudflare_workers") &&
+  !!env.CLOUDFLARE_KV_CACHE_ID;
 
 export default defineConfig({
   serverDir: "./server/",
@@ -31,7 +33,7 @@ export default defineConfig({
   storage: {
     cache: {
       // Use Cloudflare KV in Cloudflare environments, memory otherwise
-      driver: isCloudflare ? "cloudflare-kv" : "memory",
+      driver: isCloudflare ? "cloudflare-kv-binding" : "memory",
       // KV binding configuration (only applied in Cloudflare environments)
       ...(isCloudflare && {
         binding: "CACHE",

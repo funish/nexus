@@ -1,6 +1,6 @@
 import { defineConfig } from "nitro/config";
 import pkg from "./package.json";
-import { provider } from "std-env";
+import { provider, env } from "std-env";
 
 // Dynamically select storage driver based on deployment environment
 const isCloudflare = provider === "cloudflare_pages" || provider === "cloudflare_workers";
@@ -51,8 +51,8 @@ export default defineConfig({
         kv_namespaces: [
           {
             binding: "CACHE",
-            id: process.env.CLOUDFLARE_KV_CACHE_ID || "",
-            preview_id: process.env.CLOUDFLARE_KV_CACHE_PREVIEW_ID || "",
+            id: env.CLOUDFLARE_KV_CACHE_ID || "",
+            preview_id: env.CLOUDFLARE_KV_CACHE_PREVIEW_ID || "",
           },
         ],
       },

@@ -9,6 +9,7 @@
 
 - 🪟 **WinGet Registry** - Complete Windows Package Manager mirror with search, package metadata, and version information
 - 📦 **Universal CDN** - Access packages from npm, GitHub, JSR, cdnjs, WordPress, and more
+- 🔒 **SRI Support** - Built-in Subresource Integrity (SHA-256) for secure CDN resource loading
 - 🔄 **Registry Mirror** - Proxy requests to 40+ package registries (PyPI, crates.io, Go, Maven, Docker, etc.)
 - 📚 **OpenAPI Documentation** - Interactive API docs available at `/_docs/scalar`, `/_docs/swagger`, and `/_docs/openapi.json`
 
@@ -100,6 +101,56 @@ curl https://nexus.funish.net/cdn/wp/plugins/wp-slimstat/trunk/wp-slimstat.js
 # Theme
 curl https://nexus.funish.net/cdn/wp/themes/twentytwentyfour/1.0/style.css
 ```
+
+### Subresource Integrity (SRI)
+
+All CDN endpoints (npm, GitHub, JSR) include SHA-256 integrity hashes for secure resource loading. The browser will verify that the file hasn't been tampered with during delivery.
+
+#### Get Integrity Hashes
+
+```bash
+# Get package listing with integrity hashes
+curl https://nexus.funish.net/cdn/npm/react@18.3.1/
+
+# Response includes integrity for each file:
+{
+  "name": "react",
+  "version": "18.3.1",
+  "files": [
+    {
+      "name": "index.js",
+      "size": 12345,
+      "integrity": "sha256-ABC123..."
+    }
+  ]
+}
+```
+
+#### Use SRI in HTML
+
+```html
+<!-- npm package -->
+<script src="https://nexus.funish.net/cdn/npm/react@18.3.1/index.js"
+        integrity="sha256-ABC123..."
+        crossorigin="anonymous"></script>
+
+<!-- GitHub release -->
+<script src="https://nexus.funish.net/cdn/gh/vuejs/core@v3.4.0/dist/vue.global.js"
+        integrity="sha256-XYZ789..."
+        crossorigin="anonymous"></script>
+
+<!-- JSR package -->
+<script type="module"
+        src="https://nexus.funish.net/cdn/jsr/@std/path@1.0.0/mod.ts"
+        integrity="sha256-DEF456..."
+        crossorigin="anonymous"></script>
+```
+
+**Important Notes:**
+
+- ✅ **Use exact versions** (e.g., `react@18.3.1`) - SRI is only provided for complete versions
+- ✅ **Include `crossorigin="anonymous"`** - Required for cross-origin SRI verification
+- ❌ **Avoid version ranges** (e.g., `react@18`) - Hash may change as versions update
 
 ### Registry Mirror
 

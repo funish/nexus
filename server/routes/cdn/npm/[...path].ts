@@ -4,6 +4,7 @@ import { HTTPError } from "h3";
 import { parseTarGzip } from "nanotar";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
+import { calculateIntegrity } from "../../../utils/integrity";
 import semver from "semver";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
@@ -163,9 +164,13 @@ async function cacheNpmPackageInBackground(
           await storage.setItemRaw(cacheKey, file.data);
         }
 
+        // Calculate SHA-256 integrity for SRI
+        const integrity = await calculateIntegrity(file.data);
+
         fileList.push({
           name: relativePath,
           size: file.size || 0,
+          integrity,
         });
       }
     }

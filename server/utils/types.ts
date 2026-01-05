@@ -8,6 +8,7 @@
 export interface CdnFile {
   name: string;
   size: number;
+  integrity?: string;
 }
 
 /**

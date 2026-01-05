@@ -309,6 +309,31 @@ export default defineHandler(async (event) => {
   // Check if entire package is already cached
   const isCached = await isNpmPackageCached(packageName, version);
 
+  // Handle +esm bundling request
+  if (filepath === "+esm") {
+    // Determine entry point from package.json
+    let entryFile = versionInfo.browser || versionInfo.main || versionInfo.module || "index.js";
+
+    // Ensure package is fully cached
+    if (!isCached) {
+      await cacheNpmPackageInBackground(packageName, version, tarballUrl);
+    }
+
+    // Bundle the package
+    const { bundleNpmPackage } = await import("../../../utils/bundler");
+    const bundledCode = await bundleNpmPackage({
+      packageName,
+      version,
+      entryPoint: entryFile,
+    });
+
+    event.res.headers.set("Content-Type", "application/javascript; charset=utf-8");
+    event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    event.res.headers.set("X-ESM-Version", version);
+
+    return bundledCode;
+  }
+
   // Special handling for package root access
   if (!filepath) {
     if (hasTrailingSlash) {

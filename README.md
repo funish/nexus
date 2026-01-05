@@ -33,6 +33,9 @@ curl https://nexus.funish.net/cdn/npm/react@18/index.js
 
 # Get package metadata
 curl https://nexus.funish.net/cdn/npm/react@18/package.json
+
+# Get bundled ESM module
+curl https://nexus.funish.net/cdn/npm/d3@7/+esm
 ```
 
 **Version resolution:**
@@ -41,6 +44,18 @@ curl https://nexus.funish.net/cdn/npm/react@18/package.json
 - `react@18` → latest 18.x.x version
 - `react@18.3` → latest 18.3.x version
 - `react@18.3.1` → exact version
+
+**ESM Bundling (`+esm`):**
+
+The `+esm` endpoint bundles npm packages into a single ESM module with external dependencies resolved to CDN paths:
+
+```html
+<script type="module">
+  import { scaleLinear } from 'https://nexus.funish.net/cdn/npm/d3@7/+esm';
+</script>
+```
+
+External dependencies are automatically converted to CDN URLs (e.g., `d3-array` → `/cdn/npm/d3-array@3/+esm`).
 
 #### GitHub Releases
 

@@ -146,32 +146,48 @@ async function cacheJsrPackageInBackground(
     const rootDir = firstFile?.name.split("/")[0] || "package";
     const rootPath = `${rootDir}/`;
 
-    // Build file list
-    const fileList: Array<CdnFile> = [];
+    // Filter files to cache
+    const filesToCache = files.filter((f) => f.data);
 
-    // Cache all files
-    for (const file of files) {
-      if (file.data) {
-        // Remove root directory from path
-        const relativePath = file.name.slice(rootPath.length);
-        const cacheKey = `${cacheBase}/${relativePath}`;
+    // Build file list metadata (synchronous)
+    const fileList: Array<CdnFile> = filesToCache.map((f) => ({
+      name: f.name.slice(rootPath.length),
+      size: f.size || 0,
+    }));
 
-        // Check if already cached to avoid duplicate writes
+    // Optimization: Concurrent caching using Promise.allSettled
+    const cachePromises = filesToCache.map(async (file) => {
+      const relativePath = file.name.slice(rootPath.length);
+      const cacheKey = `${cacheBase}/${relativePath}`;
+
+      try {
+        // Check if already cached
         const exists = await storage.getItemRaw(cacheKey);
-        if (!exists) {
-          await storage.setItemRaw(cacheKey, file.data);
+        if (exists) {
+          return; // Skip if already exists
         }
 
-        // Calculate SHA-256 integrity for SRI
-        const integrity = await calculateIntegrity(file.data);
+        // Cache file data
+        if (file.data) {
+          await storage.setItemRaw(cacheKey, file.data);
 
-        fileList.push({
-          name: relativePath,
-          size: file.size || 0,
-          integrity,
-        });
+          // Calculate SHA-256 integrity for SRI
+          const integrity = await calculateIntegrity(file.data);
+
+          // Update file list with integrity
+          const fileItem = fileList.find((f) => f.name === relativePath);
+          if (fileItem) {
+            fileItem.integrity = integrity;
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to cache file ${relativePath}:`, error);
+        // Continue with other files even if this one fails
       }
-    }
+    });
+
+    // Wait for all cache operations to complete (even if some fail)
+    await Promise.allSettled(cachePromises);
 
     // Store file list in meta
     await storage.setMeta(cacheBase, { files: fileList });

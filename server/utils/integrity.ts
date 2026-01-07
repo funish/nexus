@@ -1,9 +1,9 @@
-import { subtle } from "uncrypto";
+import { digest } from "ohash";
 
 /**
  * Calculate SHA-256 hash for Subresource Integrity (SRI)
  *
- * Uses uncrypto's unified Web Crypto API with manual buffer handling
+ * Uses ohash for optimized SHA-256 calculation with proper base64 encoding
  * to ensure compatibility across all environments including edge workers.
  *
  * @param data - File data as Uint8Array
@@ -12,26 +12,23 @@ import { subtle } from "uncrypto";
  * @example
  * ```typescript
  * const integrity = await calculateIntegrity(fileData);
- * // Returns: "sha256-x6DyU7IOamUJA7WZXtPnTLMVXbTKfvqHw9hgqF39HXfvhLf3mMNEatcCg+imorU9="
+ * // Returns: "sha256-hwg4gsxgFZhOsEEamdOYGBf13FyQuiTwlAQgxVSNgt4="
  * ```
  */
 export async function calculateIntegrity(data: Uint8Array): Promise<string> {
-  // Create a copy of the data to avoid shared state issues in edge workers
-  const uint8Array = new Uint8Array(data);
+  // Convert Uint8Array to string for ohash
+  const decoder = new TextDecoder();
+  const text = decoder.decode(data);
 
-  // Convert to ArrayBuffer (slice ensures we only get the relevant portion)
-  const arrayBuffer = uint8Array.buffer.slice(
-    uint8Array.byteOffset,
-    uint8Array.byteOffset + uint8Array.byteLength,
-  );
+  // Use ohash for optimized SHA-256 (returns base64url format)
+  const base64url = digest(text);
 
-  // Use uncrypto's unified Web Crypto API for SHA-256
-  const hashBuffer = await subtle.digest({ name: "SHA-256" }, arrayBuffer);
-
-  // Convert hash buffer to Base64 (manual conversion to avoid undio edge issues)
-  const hashArray = new Uint8Array(hashBuffer);
-  const binaryString = String.fromCharCode(...hashArray.values());
-  const base64 = btoa(binaryString);
+  // Convert base64url to standard base64 for SRI compatibility
+  // Replace: - -> +, _ -> /, add padding
+  const base64 = base64url
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(base64url.length + ((4 - (base64url.length % 4)) % 4), "=");
 
   // Return complete SRI format
   return `sha256-${base64}`;

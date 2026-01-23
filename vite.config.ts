@@ -11,7 +11,6 @@ const isCloudflare =
 export default defineConfig({
   plugins: [
     nitro({
-      preset: "bun",
       serverDir: "./server/",
       experimental: {
         openAPI: true,

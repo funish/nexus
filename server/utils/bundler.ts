@@ -1,4 +1,3 @@
-import { rolldown } from "rolldown";
 import { useStorage } from "nitro/storage";
 import semver from "semver";
 
@@ -33,11 +32,15 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
 
   const packageJson = JSON.parse(new TextDecoder().decode(packageJsonData));
   const dependencyRanges = packageJson.dependencies || {};
+  const peerDependencies = packageJson.peerDependencies || {};
+
+  // Merge all dependency ranges
+  const allDependencyRanges = { ...dependencyRanges, ...peerDependencies };
 
   // Resolve dependency ranges to exact versions using semver
   const dependencies: Record<string, string> = {};
 
-  for (const [depName, depRange] of Object.entries(dependencyRanges)) {
+  for (const [depName, depRange] of Object.entries(allDependencyRanges)) {
     try {
       const rangeStr = depRange as string;
       // Use semver to parse the range and get the upper bound
@@ -93,9 +96,9 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
     }
   }
 
-  // Load all files into memory
+  // Load all files into memory for Bun.build
   const fileList = meta.files as Array<{ name: string; size: number }>;
-  const memoryFiles = new Map<string, string>();
+  const files: Record<string, string> = {};
 
   for (const file of fileList) {
     const cacheKey = `${cacheBase}/${file.name}`;
@@ -104,91 +107,121 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
       const key = `/virtual/${packageName}/${file.name}`;
       try {
         const content = new TextDecoder().decode(data);
-        memoryFiles.set(key, content);
+        files[key] = content;
       } catch {
         // Skip files that can't be decoded (likely binary)
       }
     }
   }
 
-  // Build paths map for external dependencies
-  const paths: Record<string, string> = {};
+  // Build external dependencies list and CDN paths mapping
+  const external: string[] = [];
+  const cdnPaths: Record<string, string> = {};
   for (const [depName, depVersion] of Object.entries(dependencies)) {
-    paths[depName] = `/cdn/npm/${depName}@${depVersion}/+esm`;
+    external.push(depName);
+    cdnPaths[depName] = `/cdn/npm/${depName}@${depVersion}/+esm`;
   }
 
-  // Bundle with rolldown
-  const bundle = await rolldown({
-    input: `/virtual/${packageName}/${entryPoint}`,
+  // Bundle with Bun.build
+  const buildResult = await Bun.build({
+    entrypoints: [`/virtual/${packageName}/${entryPoint}`],
+    root: "/", // Set root to avoid file system resolution issues
+    target: "browser",
+    format: "esm",
+    external: external,
+    minify: true,
+    sourcemap: false,
     plugins: [
       {
         name: "memory-resolver",
-        resolveId(source, importer) {
-          // Handle absolute virtual paths
-          if (source.startsWith("/virtual/")) {
-            if (memoryFiles.has(source)) {
-              return { id: source };
+        setup(build) {
+          // Handle module resolution - must filter for virtual paths
+          build.onResolve({ filter: /^\/virtual\// }, (args) => {
+            // Handle absolute virtual paths
+            if (args.path in files) {
+              return { path: args.path, namespace: "virtual" };
             }
             return null;
-          }
+          });
 
-          // Handle relative imports
-          if (source.startsWith("./") || source.startsWith("../")) {
-            if (!importer) return null;
+          // Handle relative imports from virtual files
+          build.onResolve({ filter: /^\.\.?\// }, (args) => {
+            // Only process if the importer is a virtual file
+            if (args.importer.startsWith("/virtual/")) {
+              const importerDir = args.importer.substring(0, args.importer.lastIndexOf("/"));
 
-            const lastSlash = importer.lastIndexOf("/");
-            const importerDir = lastSlash !== -1 ? importer.substring(0, lastSlash) : importer;
+              // Resolve relative path
+              const parts = importerDir.split("/");
+              const sourceParts = args.path.split("/");
 
-            // Resolve relative path
-            const parts = importerDir.split("/");
-            const sourceParts = source.split("/");
+              for (const part of sourceParts) {
+                if (part === "..") {
+                  parts.pop();
+                } else if (part !== ".") {
+                  parts.push(part);
+                }
+              }
 
-            for (const part of sourceParts) {
-              if (part === "..") {
-                parts.pop();
-              } else if (part !== ".") {
-                parts.push(part);
+              const resolved = parts.join("/");
+              if (resolved in files) {
+                return { path: resolved, namespace: "virtual" };
               }
             }
-
-            const resolved = parts.join("/");
-            if (memoryFiles.has(resolved)) {
-              return { id: resolved };
-            }
             return null;
-          }
+          });
 
           // Handle bare imports (external dependencies)
-          if (!source.startsWith(".") && !source.startsWith("/")) {
-            // Check if it's in dependencies
-            if (dependencies[source]) {
-              return { id: source, external: true };
-            }
-            // Unknown dependency, keep as external
-            return { id: source, external: true };
-          }
+          build.onResolve({ filter: /^[^./]/ }, (args) => {
+            // Mark as external for bare imports
+            return { path: args.path, external: true };
+          });
 
-          return null;
-        },
-        load(id) {
-          if (memoryFiles.has(id)) {
-            return memoryFiles.get(id)!;
-          }
-          return null;
+          // Handle module loading
+          build.onLoad({ filter: /^\/virtual\//, namespace: "virtual" }, (args) => {
+            if (args.path in files) {
+              return { contents: files[args.path] as string, loader: "js" };
+            }
+            return undefined;
+          });
         },
       },
     ],
   });
 
-  const output = await bundle.generate({
-    format: "esm",
-    sourcemap: false,
-    paths: paths, // Map external dependencies to CDN paths
-    minify: true,
-  });
+  // Get the bundled code
+  const output = buildResult.outputs[0];
+  if (!output) {
+    throw new Error("Bundler failed to generate output");
+  }
+  let bundledCode = await output.text();
 
-  await bundle.close();
+  // Rewrite external imports to CDN paths
+  // Process all dependencies, not just those in the initial list
+  // to catch transitive dependencies
+  const allImports = new Set<string>();
 
-  const bundledCode = output.output[0].code;
+  // First pass: find all bare imports in the code
+  // Matches both: import/export ... from "x" and export*from"x" (minified)
+  const importRegex = /(?:import|export)\s*(?:\*|\{[^}]*\}|\w+)?\s*from\s*["']([^"']+)["']/g;
+  let match;
+  while ((match = importRegex.exec(bundledCode)) !== null) {
+    const importPath = match[1];
+    if (importPath && !importPath.startsWith(".") && !importPath.startsWith("/")) {
+      allImports.add(importPath);
+    }
+  }
+
+  // Second pass: rewrite all bare imports to CDN paths
+  for (const depName of allImports) {
+    // Use versioned path if available, otherwise fallback to unversioned path
+    const cdnPath = cdnPaths[depName] || `/cdn/npm/${depName}/+esm`;
+    // Match both: "dep" and from"dep" (minified), then replace with CDN path
+    bundledCode = bundledCode.replaceAll(
+      new RegExp(`(?:from)?(["'])${depName}\\1`, "g"),
+      (match, quote) =>
+        match.startsWith("from") ? `from${quote}${cdnPath}${quote}` : `${quote}${cdnPath}${quote}`,
+    );
+  }
+
   return bundledCode;
 }

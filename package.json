@@ -18,9 +18,9 @@
     "url": "git+https://github.com/funish/nexus.git"
   },
   "scripts": {
-    "build": "vite build",
-    "dev": "vite dev",
-    "preview": "vite preview",
+    "build": "bunx --bun vite build",
+    "dev": "bunx --bun vite dev",
+    "preview": "bunx --bun vite preview",
     "lint": "basis lint --all",
     "postinstall": "basis git setup"
   },

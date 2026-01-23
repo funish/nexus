@@ -3,7 +3,7 @@
 ![GitHub](https://img.shields.io/github/license/funish/nexus)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
 
-> Universal package registry and CDN - WinGet registry mirror, npm, GitHub, JSR, cdnjs, WordPress, and 40+ package registries.
+> Universal package registry and CDN - WinGet registry mirror, npm, GitHub, JSR, cdnjs, WordPress, and many more package registries.
 
 ## Features
 

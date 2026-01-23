@@ -8,7 +8,7 @@ interface BundleOptions {
 }
 
 /**
- * Bundle an npm package using rolldown from cached files
+ * Bundle an npm package using Bun.build from cached files
  * Returns a bundled ESM module as a string
  */
 export async function bundleNpmPackage(options: BundleOptions): Promise<string> {

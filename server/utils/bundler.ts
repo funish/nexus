@@ -124,9 +124,12 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
     cdnPaths[depName] = `/cdn/npm/${depName}@${depVersion}/+esm`;
   }
 
+  // Normalize entry point to match normalized file keys
+  const normalizedEntryPoint = entryPoint.replace(/^\.?\//, "");
+
   // Bundle with Bun.build
   const buildResult = await Bun.build({
-    entrypoints: [`/virtual/${packageName}/${entryPoint}`],
+    entrypoints: [`/virtual/${packageName}/${normalizedEntryPoint}`],
     root: "/", // Set root to avoid file system resolution issues
     target: "browser",
     format: "esm",

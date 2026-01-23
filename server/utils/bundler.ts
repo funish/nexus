@@ -104,7 +104,9 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
     const cacheKey = `${cacheBase}/${file.name}`;
     const data = await storage.getItemRaw(cacheKey);
     if (data) {
-      const key = `/virtual/${packageName}/${file.name}`;
+      // Normalize filename: remove leading ./ or /
+      const normalizedName = file.name.replace(/^\.?\//, "");
+      const key = `/virtual/${packageName}/${normalizedName}`;
       try {
         const content = new TextDecoder().decode(data);
         files[key] = content;

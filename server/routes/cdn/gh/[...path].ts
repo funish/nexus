@@ -1,7 +1,6 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 import { HTTPError } from "h3";
-import { parseTarGzip } from "nanotar";
 import { getContentType } from "../../../utils/mime";
 import { useStorage } from "nitro/storage";
 import { calculateIntegrity } from "../../../utils/integrity";
@@ -127,30 +126,34 @@ async function getOrCacheFile(
   }
 
   const tarballData = await tarballRes.bytes();
-  const files = await parseTarGzip(tarballData);
+  const archive = new Bun.Archive(tarballData);
+  const filesMap = await archive.files();
 
   // Determine root directory in tarball
-  const firstContentFile = files.find(
-    (f) => f.name.includes("/") && !f.name.startsWith("pax_global_header"),
+  const firstContentPath = [...filesMap.keys()].find(
+    (path) => path.includes("/") && !path.startsWith("pax_global_header"),
   );
-  const rootDir = firstContentFile?.name.split("/")[0] || `${repo}-`;
+  const rootDir = firstContentPath?.split("/")[0] || `${repo}-`;
   const rootPath = `${rootDir}/`;
 
   // Find and return the requested file
-  const targetFile = files.find((f) => {
-    if (f.type !== "file" || !f.data) return false;
-    const relativePath = f.name.slice(rootPath.length);
-    return relativePath === filepath;
-  });
+  let targetFileData: Uint8Array | undefined;
+  for (const [path, file] of filesMap) {
+    const relativePath = path.slice(rootPath.length);
+    if (relativePath === filepath) {
+      targetFileData = await file.bytes();
+      break;
+    }
+  }
 
-  if (!targetFile?.data) {
+  if (!targetFileData) {
     throw new HTTPError({
       status: 404,
       statusText: `File not found: ${filepath}`,
     });
   }
 
-  return targetFile.data;
+  return targetFileData;
 }
 
 // Background task to cache all files from a GitHub repository version
@@ -176,27 +179,28 @@ async function cacheGitHubPackageInBackground(owner: string, repo: string, versi
     }
 
     const tarballData = await tarballRes.bytes();
-    const files = await parseTarGzip(tarballData);
+    const archive = new Bun.Archive(tarballData);
+    const filesMap = await archive.files();
 
     // Determine root directory in tarball
-    const firstContentFile = files.find(
-      (f) => f.name.includes("/") && !f.name.startsWith("pax_global_header"),
+    const firstContentPath = [...filesMap.keys()].find(
+      (path) => path.includes("/") && !path.startsWith("pax_global_header"),
     );
-    const rootDir = firstContentFile?.name.split("/")[0] || `${repo}-`;
+    const rootDir = firstContentPath?.split("/")[0] || `${repo}-`;
     const rootPath = `${rootDir}/`;
 
-    // Filter files to cache
-    const filesToCache = files.filter((f) => f.type === "file" && f.data);
-
-    // Build file list metadata (synchronous)
-    const fileList: Array<CdnFile> = filesToCache.map((f) => ({
-      name: f.name.slice(rootPath.length),
-      size: f.size || 0,
-    }));
+    // Build file list metadata
+    const fileList: Array<CdnFile> = [];
+    for (const [path, file] of filesMap) {
+      fileList.push({
+        name: path.slice(rootPath.length),
+        size: file.size,
+      });
+    }
 
     // Optimization: Concurrent caching using Promise.allSettled
-    const cachePromises = filesToCache.map(async (file) => {
-      const relativePath = file.name.slice(rootPath.length);
+    const cachePromises = Array.from(filesMap.entries()).map(async ([path, file]) => {
+      const relativePath = path.slice(rootPath.length);
       const cacheKey = `${cacheBase}/${relativePath}`;
 
       try {
@@ -207,17 +211,16 @@ async function cacheGitHubPackageInBackground(owner: string, repo: string, versi
         }
 
         // Cache file data
-        if (file.data) {
-          await storage.setItemRaw(cacheKey, file.data);
+        const fileData = await file.bytes();
+        await storage.setItemRaw(cacheKey, fileData);
 
-          // Calculate SHA-256 integrity for SRI
-          const integrity = await calculateIntegrity(file.data);
+        // Calculate SHA-256 integrity for SRI
+        const integrity = await calculateIntegrity(fileData);
 
-          // Update file list with integrity
-          const fileItem = fileList.find((f) => f.name === relativePath);
-          if (fileItem) {
-            fileItem.integrity = integrity;
-          }
+        // Update file list with integrity
+        const fileItem = fileList.find((f) => f.name === relativePath);
+        if (fileItem) {
+          fileItem.integrity = integrity;
         }
       } catch (error) {
         console.error(`Failed to cache file ${relativePath}:`, error);

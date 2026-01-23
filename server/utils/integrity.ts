@@ -1,10 +1,8 @@
-import { digest } from "ohash";
-
 /**
  * Calculate SHA-256 hash for Subresource Integrity (SRI)
  *
- * Uses ohash for optimized SHA-256 calculation with proper base64 encoding
- * to ensure compatibility across all environments including edge workers.
+ * Uses Bun's native CryptoHasher for optimized SHA-256 calculation.
+ * Directly accepts Uint8Array without requiring string conversion.
  *
  * @param data - File data as Uint8Array
  * @returns SRI integrity string in format "sha256-{base64-hash}"
@@ -16,19 +14,18 @@ import { digest } from "ohash";
  * ```
  */
 export async function calculateIntegrity(data: Uint8Array): Promise<string> {
-  // Convert Uint8Array to string for ohash
-  const decoder = new TextDecoder();
-  const text = decoder.decode(data);
+  // Create SHA-256 hasher
+  const hasher = new Bun.CryptoHasher("sha256");
 
-  // Use ohash for optimized SHA-256 (returns base64url format)
-  const base64url = digest(text);
+  // Update with data (can accept Uint8Array directly)
+  hasher.update(data);
 
-  // Convert base64url to standard base64 for SRI compatibility
-  // Replace: - -> +, _ -> /, add padding
-  const base64 = base64url
-    .replace(/-/g, "+")
-    .replace(/_/g, "/")
-    .padEnd(base64url.length + ((4 - (base64url.length % 4)) % 4), "=");
+  // Get hash as Uint8Array
+  const hash = hasher.digest();
+
+  // Convert Uint8Array to binary string, then to base64
+  const binaryString = String.fromCharCode(...hash);
+  const base64 = btoa(binaryString);
 
   // Return complete SRI format
   return `sha256-${base64}`;

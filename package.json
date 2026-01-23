@@ -30,7 +30,6 @@
     "@types/node": "25.0.3",
     "@types/semver": "7.7.1",
     "confbox": "0.2.2",
-    "mrmime": "2.0.1",
     "nitro": "3.0.1-alpha.1",
     "oxfmt": "0.21.0",
     "oxlint": "1.36.0",

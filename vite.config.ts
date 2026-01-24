@@ -1,12 +1,15 @@
 import { defineConfig } from "vite";
 import { nitro } from "nitro/vite";
 import pkg from "./package.json";
-import { provider, env } from "std-env";
+import { env } from "std-env";
 
-// Dynamically select storage driver based on deployment environment
-const isCloudflare =
-  (provider === "cloudflare_pages" || provider === "cloudflare_workers") &&
-  !!env.CLOUDFLARE_KV_CACHE_ID;
+// Check if S3 environment variables are configured
+const hasS3Config =
+  env.S3_ACCESS_KEY_ID &&
+  env.S3_SECRET_ACCESS_KEY &&
+  env.S3_ENDPOINT &&
+  env.S3_REGION &&
+  env.S3_BUCKET;
 
 export default defineConfig({
   plugins: [
@@ -40,11 +43,15 @@ export default defineConfig({
       },
       storage: {
         cache: {
-          // Use Cloudflare KV in Cloudflare environments, memory otherwise
-          driver: isCloudflare ? "cloudflare-kv-binding" : "memory",
-          // KV binding configuration (only applied in Cloudflare environments)
-          ...(isCloudflare && {
-            binding: "CACHE",
+          // Use S3 if configured, otherwise fallback to memory
+          driver: hasS3Config ? "s3" : "memory",
+          // S3 configuration (only applied when S3 env vars are set)
+          ...(hasS3Config && {
+            accessKeyId: env.S3_ACCESS_KEY_ID,
+            secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+            endpoint: env.S3_ENDPOINT,
+            region: env.S3_REGION,
+            bucket: env.S3_BUCKET,
           }),
         },
       },
@@ -54,20 +61,6 @@ export default defineConfig({
           base: ".cache",
         },
       },
-      // Cloudflare bindings configuration (only applied in Cloudflare environments)
-      ...(isCloudflare && {
-        cloudflare: {
-          wrangler: {
-            kv_namespaces: [
-              {
-                binding: "CACHE",
-                id: env.CLOUDFLARE_KV_CACHE_ID || "",
-                preview_id: env.CLOUDFLARE_KV_CACHE_PREVIEW_ID || "",
-              },
-            ],
-          },
-        },
-      }),
       compatibilityDate: "2025-12-31",
     }),
   ],

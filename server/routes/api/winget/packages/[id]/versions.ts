@@ -13,7 +13,7 @@ import {
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet Registry"],
+    tags: ["WinGet API"],
     summary: "Get all versions of a WinGet package",
     description: "Retrieve all available versions for a specific WinGet package",
     parameters: [

@@ -7,7 +7,7 @@ import { buildPackageIndex } from "../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet Registry"],
+    tags: ["WinGet API"],
     summary: "Get all WinGet packages",
     description: "Retrieve a paginated list of all WinGet packages with their versions",
     parameters: [
@@ -50,7 +50,7 @@ defineRouteMeta({
 });
 
 /**
- * GET /registry/winget/packages
+ * GET /api/winget/packages
  *
  * WinGet.RestSource API - Get all packages
  *

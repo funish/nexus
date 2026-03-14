@@ -7,7 +7,7 @@ const GITHUB_BRANCH = "master";
 const GITHUB_API_BASE = "https://api.github.com";
 
 /**
- * WinGet Registry types and utilities
+ * WinGet API types and utilities
  * Based on WinGet.RestSource OpenAPI specification v1.9.0
  */
 

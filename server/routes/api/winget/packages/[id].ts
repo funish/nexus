@@ -7,7 +7,7 @@ import { buildPackageIndex } from "../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet Registry"],
+    tags: ["WinGet API"],
     summary: "Get specific WinGet package",
     description: "Retrieve details of a specific WinGet package by its identifier",
     parameters: [
@@ -44,7 +44,7 @@ defineRouteMeta({
 });
 
 /**
- * GET /registry/winget/packages/{PackageIdentifier}
+ * GET /api/winget/packages/{PackageIdentifier}
  *
  * WinGet.RestSource API - Get specific package
  *

@@ -8,7 +8,7 @@ import { getVersionManifests, fetchManifestContent } from "../../../../../../../
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet Registry"],
+    tags: ["WinGet API"],
     summary: "Get all installers for a package version",
     description: "Retrieve all available installers for a specific package version",
     parameters: [

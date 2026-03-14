@@ -8,7 +8,7 @@ import { getVersionManifests, fetchManifestContent } from "../../../../../../uti
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet Registry"],
+    tags: ["WinGet API"],
     summary: "Get specific version of a WinGet package",
     description: "Retrieve version metadata for a specific package version",
     parameters: [
@@ -58,7 +58,7 @@ defineRouteMeta({
 });
 
 /**
- * GET /registry/winget/packages/{PackageIdentifier}/versions/{PackageVersion}
+ * GET /api/winget/packages/{PackageIdentifier}/versions/{PackageVersion}
  *
  * WinGet.RestSource API - Get specific version metadata
  *

@@ -8,7 +8,7 @@ import { getVersionManifests, fetchManifestContent } from "../../../../../../../
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet Registry"],
+    tags: ["WinGet API"],
     summary: "Get specific locale for a package version",
     description: "Retrieve detailed locale information for a specific package version",
     parameters: [

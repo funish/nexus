@@ -221,6 +221,101 @@ Interactive API documentation is available:
 - **Swagger UI**: https://nexus.funish.net/_docs/swagger
 - **OpenAPI Spec**: https://nexus.funish.net/_docs/openapi.json
 
+## Deployment
+
+### Prerequisites
+
+- **Bun** 1+ runtime
+
+### Installation
+
+```bash
+# Install dependencies
+bun install
+
+# Build the application
+bun run build
+```
+
+### Development
+
+```bash
+# Start development server
+bun run dev
+```
+
+The application will be available at `http://localhost:3000`
+
+### Production Deployment
+
+```bash
+# Build the application
+bun run build
+
+# Start production server
+bun run preview
+```
+
+#### Docker Deployment
+
+##### Option 1: Using Docker Compose (Recommended)
+
+```bash
+# Copy environment variables
+cp .env.example .env
+
+# Edit .env file to configure your services
+# nano .env
+
+# Start the application
+docker-compose up -d
+
+# View logs
+docker-compose logs -f nexus
+
+# Stop the application
+docker-compose down
+```
+
+The application will be available at `http://localhost:3000`
+
+##### Option 2: Using Docker Run
+
+```bash
+# Pull the official image
+docker pull funish/nexus:latest
+
+# Run container
+docker run -d \
+  --name nexus \
+  -p 3000:3000 \
+  --env-file .env \
+  --restart unless-stopped \
+  funish/nexus:latest
+
+# View logs
+docker logs -f nexus
+
+# Stop the container
+docker stop nexus
+docker rm nexus
+```
+
+##### Option 3: Build from Source
+
+```bash
+# Build Docker image
+docker build -t nexus .
+
+# Run container
+docker run -d \
+  --name nexus \
+  -p 3000:3000 \
+  --env-file .env \
+  --restart unless-stopped \
+  nexus
+```
+
 ## Support & Community
 
 - 📫 [Report Issues](https://github.com/funish/axis/issues)

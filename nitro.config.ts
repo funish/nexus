@@ -1,6 +1,7 @@
 import { defineConfig } from "nitro/config";
-import pkg from "./package.json";
 import { provider, env } from "std-env";
+
+import pkg from "./package.json";
 
 // Dynamically select storage driver based on deployment environment
 const isCloudflare =

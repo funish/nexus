@@ -130,20 +130,26 @@ curl https://nexus.funish.net/cdn/npm/react@18.3.1/
 
 ```html
 <!-- npm package -->
-<script src="https://nexus.funish.net/cdn/npm/react@18.3.1/index.js"
-        integrity="sha256-ABC123..."
-        crossorigin="anonymous"></script>
+<script
+  src="https://nexus.funish.net/cdn/npm/react@18.3.1/index.js"
+  integrity="sha256-ABC123..."
+  crossorigin="anonymous"
+></script>
 
 <!-- GitHub release -->
-<script src="https://nexus.funish.net/cdn/gh/vuejs/core@v3.4.0/dist/vue.global.js"
-        integrity="sha256-XYZ789..."
-        crossorigin="anonymous"></script>
+<script
+  src="https://nexus.funish.net/cdn/gh/vuejs/core@v3.4.0/dist/vue.global.js"
+  integrity="sha256-XYZ789..."
+  crossorigin="anonymous"
+></script>
 
 <!-- JSR package -->
-<script type="module"
-        src="https://nexus.funish.net/cdn/jsr/@std/path@1.0.0/mod.ts"
-        integrity="sha256-DEF456..."
-        crossorigin="anonymous"></script>
+<script
+  type="module"
+  src="https://nexus.funish.net/cdn/jsr/@std/path@1.0.0/mod.ts"
+  integrity="sha256-DEF456..."
+  crossorigin="anonymous"
+></script>
 ```
 
 **Important Notes:**
@@ -250,9 +256,7 @@ GOPROXY=https://nexus.funish.net/mirror/go,https://proxy.golang.org,direct
 ```json
 // daemon.json
 {
-  "registry-mirrors": [
-    "https://nexus.funish.net/mirror/docker"
-  ]
+  "registry-mirrors": ["https://nexus.funish.net/mirror/docker"]
 }
 ```
 

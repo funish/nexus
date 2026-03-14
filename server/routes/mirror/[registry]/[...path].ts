@@ -1,7 +1,8 @@
 import { defineRouteMeta } from "nitro";
 import { defineCachedHandler } from "nitro/cache";
+import { HTTPError, proxyRequest } from "nitro/h3";
 import { getRouterParam } from "nitro/h3";
-import { HTTPError, proxyRequest } from "h3";
+
 import { mirrorRegistries } from "../../../utils/mirror";
 
 defineRouteMeta({

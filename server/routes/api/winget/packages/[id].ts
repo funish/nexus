@@ -1,7 +1,7 @@
-import { defineCachedHandler } from "nitro/cache";
 import { defineRouteMeta } from "nitro";
-import { getRouterParam } from "nitro/h3";
-import { HTTPError } from "h3";
+import { defineCachedHandler } from "nitro/cache";
+import { getRouterParam, HTTPError } from "nitro/h3";
+
 import type { PackageSingleResponse } from "../../../../utils/winget";
 import { buildPackageIndex } from "../../../../utils/winget";
 

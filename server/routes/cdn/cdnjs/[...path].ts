@@ -1,9 +1,9 @@
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam } from "nitro/h3";
-import { HTTPError } from "h3";
-import { getContentType } from "../../../utils/mime";
+import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 import { useStorage } from "nitro/storage";
 import semver from "semver";
+
+import { getContentType } from "../../../utils/mime";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 defineRouteMeta({

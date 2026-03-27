@@ -1,6 +1,7 @@
 import { defineNitroConfig } from "nitro/config";
-import pkg from "./package.json";
 import { env } from "std-env";
+
+import pkg from "./package.json";
 
 // Check if S3 environment variables are configured
 const hasS3Config =

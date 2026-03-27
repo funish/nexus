@@ -1,6 +1,7 @@
-import { defineCachedHandler } from "nitro/cache";
 import { defineRouteMeta } from "nitro";
+import { defineCachedHandler } from "nitro/cache";
 import { getQuery } from "nitro/h3";
+
 import type { PackageMultipleResponse, WinGetPackage } from "../../../utils/winget";
 import { buildPackageIndex } from "../../../utils/winget";
 

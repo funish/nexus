@@ -1,8 +1,8 @@
-import { defineCachedHandler } from "nitro/cache";
-import { defineRouteMeta } from "nitro";
-import { getRouterParam } from "nitro/h3";
-import { HTTPError } from "h3";
 import { parseYAML } from "confbox";
+import { defineRouteMeta } from "nitro";
+import { defineCachedHandler } from "nitro/cache";
+import { getRouterParam, HTTPError } from "nitro/h3";
+
 import type { LocaleMultipleResponse, LocaleSchema } from "../../../../../../../utils/winget";
 import { getVersionManifests, fetchManifestContent } from "../../../../../../../utils/winget";
 

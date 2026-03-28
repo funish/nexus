@@ -7,8 +7,7 @@ import {
   buildPackageIndex,
   createWinGetError,
   fetchManifestContent,
-  getLetterDirectoryShas,
-  getGitHubTreePaths,
+  getVersionManifests,
 } from "../../../../../utils/winget";
 
 defineRouteMeta({
@@ -74,58 +73,14 @@ export default defineHandler(async (event) => {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
-  // Get all manifest paths for all versions at once
-  // Build version -> manifest path mapping
-  const versionManifestMap = new Map<string, string>();
-
-  try {
-    const parts = packageId.split(".");
-    if (parts.length >= 2) {
-      const [publisher, name] = parts;
-
-      if (publisher && name) {
-        const letter = publisher[0]?.toLowerCase();
-
-        if (letter) {
-          // Get all paths for this package's letter directory
-          const letterShas = await getLetterDirectoryShas();
-          const sha = letterShas.get(letter);
-
-          if (sha) {
-            const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
-            const pathPrefix = `${publisher}/${name}/`;
-
-            // Find all version manifests
-            for (const path of paths) {
-              if (path.startsWith(pathPrefix) && path.endsWith(`/${packageId}.yaml`)) {
-                // Extract version from path: publisher/name/version/package.yaml
-                const pathParts = path.split("/");
-                const nameIndex = pathParts.indexOf(name);
-                const versionIndex = nameIndex !== -1 ? nameIndex + 1 : -1;
-
-                if (versionIndex > 0 && versionIndex < pathParts.length) {
-                  const version = pathParts[versionIndex];
-                  if (version) {
-                    versionManifestMap.set(version, `manifests/${letter}/${path}`);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  } catch {
-    // If building manifest map fails, continue without DefaultLocale
-  }
-
-  // Build response with DefaultLocale for each version (parallel fetch)
   const sortedVersions = Array.from(versions).sort().reverse();
 
-  // Parallel fetch all manifest contents for better performance
+  // For each version, fetch the version manifest to get DefaultLocale and Channel
   const manifestPromises = sortedVersions.map(async (version) => {
-    const manifestPath = versionManifestMap.get(version);
-    if (!manifestPath) {
+    const manifestFiles = getVersionManifests(packageId, version);
+    const versionManifestPath = manifestFiles[0]; // {id}.yaml
+
+    if (!versionManifestPath) {
       return {
         version,
         defaultLocale: "en-US",
@@ -134,7 +89,7 @@ export default defineHandler(async (event) => {
     }
 
     try {
-      const content = await fetchManifestContent(manifestPath);
+      const content = await fetchManifestContent(versionManifestPath);
       const manifest = parseYAML(content) as Record<string, any>;
       return {
         version,
@@ -155,9 +110,8 @@ export default defineHandler(async (event) => {
 
   // Build version data array
   const versionData: VersionSchema[] = manifestResults.map((result, index) => {
-    const version = sortedVersions[index]; // Get version from sorted array
+    const version = sortedVersions[index];
 
-    // Ensure version exists (should always be true since we map over sortedVersions)
     if (!version) {
       return {
         PackageVersion: "unknown",

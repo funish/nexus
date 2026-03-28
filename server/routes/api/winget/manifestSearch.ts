@@ -1,13 +1,8 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, readBody } from "nitro/h3";
 
-import type {
-  MatchType,
-  ManifestSearchRequest,
-  ManifestSearchResult,
-  ManifestSearchResponse,
-} from "../../../utils/winget";
-import { buildPackageIndex } from "../../../utils/winget";
+import type { MatchType, ManifestSearchRequest, ManifestSearchResult } from "../../../utils/winget";
+import { getIndexDb, searchPackages } from "../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -102,41 +97,30 @@ defineRouteMeta({
  *
  * Supports both GET and POST methods for compatibility:
  * - GET: Query parameters (query, matchType, maximumResults)
- * - POST: JSON request body (official format)
- *
- * Query parameters (GET):
- * - query: Search keyword
- * - matchType: Exact | CaseInsensitive | StartsWith | Substring | Wildcard | Fuzzy | FuzzySubstring
- * - maximumResults: Maximum number of results to return
+ * - POST: JSON request body (official format with Inclusions/Filters)
  *
  * Request body (POST):
  * {
  *   "MaximumResults": 10,
  *   "FetchAllManifests": false,
- *   "Query": {
- *     "KeyWord": "Adobe",
- *     "MatchType": "CaseInsensitive"
- *   },
- *   "Inclusions": [...],
- *   "Filters": [...]
+ *   "Query": { "KeyWord": "Adobe", "MatchType": "CaseInsensitive" },
+ *   "Inclusions": [{ "KeyWord": "Microsoft", "PackageMatchField": "PackageName", "MatchType": "CaseInsensitive" }],
+ *   "Filters": [{ "KeyWord": "preview", "PackageMatchField": "Tag", "MatchType": "CaseInsensitive" }]
  * }
- *
- * Response: ManifestSearchResult
  */
 export default defineHandler(async (event) => {
   let searchRequest: ManifestSearchRequest;
 
-  // Handle both GET and POST methods
   if (event.req.method === "POST") {
-    // POST: Parse from request body (official format)
     const body = (await readBody(event)) as ManifestSearchRequest;
     searchRequest = {
       MaximumResults: body.MaximumResults,
       FetchAllManifests: body.FetchAllManifests,
       Query: body.Query,
+      Inclusions: body.Inclusions,
+      Filters: body.Filters,
     };
   } else {
-    // GET (default): Parse from query parameters
     const query = getQuery(event);
     searchRequest = {
       MaximumResults: query.maximumResults
@@ -152,42 +136,20 @@ export default defineHandler(async (event) => {
     };
   }
 
-  // Build package index
-  const packageIndex = await buildPackageIndex(event);
-  const results: ManifestSearchResponse[] = [];
+  const db = await getIndexDb(event);
 
-  const { MaximumResults, Query } = searchRequest;
-
-  for (const [packageId, versions] of packageIndex.entries()) {
-    // Apply MaximumResults limit
-    if (MaximumResults && results.length >= MaximumResults) {
-      break;
-    }
-
-    // Check query match (PackageIdentifier)
-    if (Query && Query.KeyWord) {
-      const queryMatch = matchText(packageId, Query.KeyWord, Query.MatchType || "CaseInsensitive");
-      if (!queryMatch) {
-        continue;
-      }
-    }
-
-    // Package matched all criteria
-    results.push({
-      PackageIdentifier: packageId,
-      Versions: Array.from(versions)
-        .sort()
-        .reverse()
-        .map((version) => ({
-          PackageVersion: version,
-        })),
-    });
-  }
+  const results = searchPackages(db, {
+    keyword: searchRequest.Query?.KeyWord,
+    matchType: searchRequest.Query?.MatchType,
+    maximumResults: searchRequest.MaximumResults,
+    inclusions: searchRequest.Inclusions,
+    filters: searchRequest.Filters,
+  });
 
   const response: ManifestSearchResult = {
     Data: results,
     RequiredPackageMatchFields: ["PackageIdentifier"],
-    UnsupportedPackageMatchFields: ["Market", "NormalizedPackageNameAndPublisher"],
+    UnsupportedPackageMatchFields: ["Market", "HasInstallerType"],
   };
 
   event.res.headers.set("Content-Type", "application/json");
@@ -195,52 +157,3 @@ export default defineHandler(async (event) => {
 
   return response;
 });
-
-/**
- * Match text based on match type
- */
-function matchText(text: string, keyword: string, matchType: MatchType): boolean {
-  if (!keyword) return true;
-
-  const normalizedText = text.toLowerCase();
-  const normalizedKeyword = keyword.toLowerCase();
-
-  switch (matchType) {
-    case "Exact":
-      return normalizedText === normalizedKeyword;
-    case "CaseInsensitive":
-      return normalizedText.includes(normalizedKeyword);
-    case "StartsWith":
-      return normalizedText.startsWith(normalizedKeyword);
-    case "Substring":
-      return normalizedText.includes(normalizedKeyword);
-    case "Wildcard":
-      // Simple wildcard support (* matches any characters)
-      const wildcardPattern = normalizedKeyword.replace(/\*/g, ".*");
-      const regex = new RegExp(`^${wildcardPattern}$`, "i");
-      return regex.test(text);
-    case "Fuzzy":
-      // Simple fuzzy match: keyword characters appear in order
-      let keywordIndex = 0;
-      for (const char of normalizedText) {
-        if (keywordIndex < normalizedKeyword.length && char === normalizedKeyword[keywordIndex]) {
-          keywordIndex++;
-        }
-      }
-      return keywordIndex === normalizedKeyword.length;
-    case "FuzzySubstring":
-      // Fuzzy match on any word in text
-      const words = normalizedText.split(/\s+/);
-      return words.some((word) => {
-        let keywordIndex = 0;
-        for (const char of word) {
-          if (keywordIndex < normalizedKeyword.length && char === normalizedKeyword[keywordIndex]) {
-            keywordIndex++;
-          }
-        }
-        return keywordIndex === normalizedKeyword.length;
-      });
-    default:
-      return false;
-  }
-}

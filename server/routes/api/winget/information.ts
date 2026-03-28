@@ -49,12 +49,7 @@ export default defineHandler(() => {
       SourceIdentifier: "Funish.Nexus",
       ServerSupportedVersions: ["1.4.0", "1.9.0"],
       RequiredPackageMatchFields: ["PackageIdentifier"],
-      UnsupportedPackageMatchFields: [
-        "Market",
-        "NormalizedPackageNameAndPublisher",
-        "UpgradeCode",
-        "HasInstallerType",
-      ],
+      UnsupportedPackageMatchFields: ["Market", "HasInstallerType"],
     },
   };
 });

@@ -1,35 +1,21 @@
+import { Database } from "bun:sqlite";
+
+import { unzipSync } from "fflate";
 import { type H3Event } from "nitro/h3";
-import { env } from "std-env";
 
 import { cacheStorage } from "./storage";
 
 const GITHUB_REPO = "microsoft/winget-pkgs";
 const GITHUB_BRANCH = "master";
-const GITHUB_API_BASE = "https://api.github.com";
+
+const SOURCE_MSIX_URL = "https://cdn.winget.microsoft.com/cache/source.msix";
+const INDEX_DB_KEY = "registry/winget/index.db";
+const UPDATE_INTERVAL = 600; // 10 minutes
 
 /**
  * WinGet API types and utilities
  * Based on WinGet.RestSource OpenAPI specification v1.9.0
  */
-
-/**
- * GitHub Tree API response
- */
-export interface GitHubTreeItem {
-  path: string;
-  mode: string;
-  type: "tree" | "blob";
-  sha: string;
-  size?: number;
-  url: string;
-}
-
-export interface GitHubTreeResponse {
-  sha: string;
-  url: string;
-  tree: GitHubTreeItem[];
-  truncated: boolean;
-}
 
 /**
  * Package identifier in WinGet format
@@ -208,8 +194,10 @@ export type PackageMatchField =
   | "Tag"
   | "PackageFamilyName"
   | "ProductCode"
+  | "UpgradeCode"
   | "NormalizedPackageNameAndPublisher"
-  | "Market";
+  | "Market"
+  | "HasInstallerType";
 
 /**
  * Search request match
@@ -217,6 +205,7 @@ export type PackageMatchField =
 export interface SearchRequestMatch {
   KeyWord?: string;
   MatchType?: MatchType;
+  PackageMatchField?: PackageMatchField;
 }
 
 /**
@@ -226,6 +215,8 @@ export interface ManifestSearchRequest {
   MaximumResults?: number;
   FetchAllManifests?: boolean;
   Query?: SearchRequestMatch;
+  Inclusions?: SearchRequestMatch[];
+  Filters?: SearchRequestMatch[];
 }
 
 /**
@@ -255,391 +246,391 @@ export interface ManifestSearchResult {
   UnsupportedPackageMatchFields?: PackageMatchField[];
 }
 
-/**
- * Get GitHub authentication headers if token is available
- */
-export function getGitHubHeaders(): HeadersInit {
-  const token = env.GITHUB_TOKEN;
-  const headers: HeadersInit = {
-    "User-Agent": "Funish Nexus",
-  };
+// --- index.db management ---
 
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
+// --- index.db management ---
 
-  return headers;
-}
+/** Cached Database instance */
+let cachedDb: Database | null = null;
+/** Timestamp when cachedDb was loaded */
+let cachedDbTime = 0;
 
 /**
- * Fetch GitHub tree data by SHA or branch
- * @param treeSha - The SHA of the tree or branch name
- * @param recursive - Whether to fetch recursively (default: false)
+ * Download source.msix and extract Public/index.db into cacheStorage,
+ * then update the in-memory cached instance
  */
-export async function getGitHubTree(
-  treeSha: string = GITHUB_BRANCH,
-  recursive: boolean = false,
-): Promise<GitHubTreeResponse> {
-  // Fetch from GitHub API
-  const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
-  const response = await fetch(url, {
-    headers: getGitHubHeaders(),
-  });
-
+async function refreshIndexDb(): Promise<void> {
+  const response = await fetch(SOURCE_MSIX_URL);
   if (!response.ok) {
-    throw new Error(`Failed to fetch GitHub tree: ${response.statusText}`);
+    throw new Error(`Failed to download source.msix: ${response.status}`);
   }
 
-  return (await response.json()) as GitHubTreeResponse;
+  const arrayBuffer = await response.arrayBuffer();
+  const files = unzipSync(new Uint8Array(arrayBuffer));
+
+  const indexDb = files["Public/index.db"];
+  if (!indexDb) {
+    throw new Error("index.db not found in source.msix");
+  }
+
+  await cacheStorage.setItemRaw(INDEX_DB_KEY, indexDb);
+  await cacheStorage.setMeta(INDEX_DB_KEY, { mtime: new Date() });
+
+  // Replace in-memory instance
+  cachedDb?.close();
+  cachedDb = Database.deserialize(indexDb);
+  cachedDbTime = Date.now();
 }
 
 /**
- * Fetch and cache GitHub tree paths (optimized storage)
- * @param treeSha - The SHA of the tree
- * @param cacheSuffix - Cache suffix for this tree
- * @returns Array of file paths
+ * Get index.db as an in-memory SQLite Database instance.
+ * Returns the cached instance if fresh, otherwise refreshes.
  */
-export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): Promise<string[]> {
-  const storage = cacheStorage;
-  // Replace slashes with dashes to avoid filesystem nesting issues
-  const normalizedSuffix = cacheSuffix.replace(/\//g, "-");
-  const cacheKey = `registry/winget/${GITHUB_REPO}/${normalizedSuffix}`;
-  const UPDATE_INTERVAL = 600; // 10 minutes
+export async function getIndexDb(event?: H3Event): Promise<Database> {
+  const age = cachedDb ? (Date.now() - cachedDbTime) / 1000 : Infinity;
 
-  // Check cache metadata
-  const meta = await storage.getMeta(cacheKey);
-  const now = new Date();
+  if (cachedDb && age < UPDATE_INTERVAL) {
+    return cachedDb;
+  }
 
-  // If cache exists and is within update interval, return it
-  if (meta?.mtime) {
-    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < UPDATE_INTERVAL) {
-      const cached = await storage.getItem(cacheKey);
-      if (cached && Array.isArray(cached)) {
-        return cached as string[];
+  // Try to load from cacheStorage (e.g. across restarts)
+  if (!cachedDb) {
+    const data = await cacheStorage.getItemRaw(INDEX_DB_KEY);
+    if (data) {
+      const meta = await cacheStorage.getMeta(INDEX_DB_KEY);
+      cachedDb = Database.deserialize(new Uint8Array(data as ArrayBuffer));
+      cachedDbTime = meta?.mtime ? new Date(meta.mtime).getTime() : Date.now();
+
+      // Check if loaded data is still fresh
+      if ((Date.now() - cachedDbTime) / 1000 < UPDATE_INTERVAL) {
+        return cachedDb;
       }
     }
   }
 
-  // Fetch tree data
-  const treeData = await getGitHubTree(treeSha, true);
+  // Stale — return old instance and trigger background refresh
+  if (cachedDb && event) {
+    event.waitUntil(
+      (async () => {
+        try {
+          await refreshIndexDb();
+        } catch (error) {
+          console.error("Failed to refresh index.db in background:", error);
+        }
+      })(),
+    );
+    return cachedDb;
+  }
 
-  // Extract only paths from tree items
-  const paths = treeData.tree.map((item) => item.path);
-
-  // Cache the paths array
-  await storage.setItem(cacheKey, paths);
-  await storage.setMeta(cacheKey, { mtime: new Date() });
-
-  return paths;
+  // Missing or no event — download synchronously
+  await refreshIndexDb();
+  return cachedDb!;
 }
 
-/**
- * Filter tree to only include manifest files
- */
-export function filterManifestFiles(tree: GitHubTreeItem[]): GitHubTreeItem[] {
-  return tree.filter((item) => item.path.startsWith("manifests/"));
-}
+// --- Package index ---
 
 /**
- * Get the SHA of the manifests directory
- */
-export async function getManifestsSha(): Promise<string> {
-  const storage = cacheStorage;
-  const manifestsShaKey = `registry/winget/${GITHUB_REPO}/manifests-sha`;
-  const UPDATE_INTERVAL = 600; // 10 minutes
-
-  // Check cache metadata
-  const meta = await storage.getMeta(manifestsShaKey);
-  const now = new Date();
-
-  // If cache exists and is within update interval, return it
-  if (meta?.mtime) {
-    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < UPDATE_INTERVAL) {
-      const cached = await storage.getItem(manifestsShaKey);
-      if (cached && typeof cached === "string") {
-        return cached;
-      }
-    }
-  }
-
-  // Fetch root tree
-  const rootTree = await getGitHubTree(GITHUB_BRANCH, false);
-  const manifestsItem = rootTree.tree.find(
-    (item) => item.path === "manifests" && item.type === "tree",
-  );
-
-  if (!manifestsItem) {
-    throw new Error("manifests directory not found in repository");
-  }
-
-  // Cache the SHA
-  await storage.setItem(manifestsShaKey, manifestsItem.sha);
-  await storage.setMeta(manifestsShaKey, { mtime: new Date() });
-
-  return manifestsItem.sha;
-}
-
-/**
- * Get all letter directory SHAs from manifests
- */
-export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
-  const manifestsSha = await getManifestsSha();
-  const manifestsTree = await getGitHubTree(manifestsSha, false);
-
-  const letterShas = new Map<string, string>();
-
-  for (const item of manifestsTree.tree) {
-    // Match single letter directories (a-z, 0-9)
-    if (item.type === "tree" && item.path.length === 1 && /[a-z0-9]/.test(item.path)) {
-      letterShas.set(item.path, item.sha);
-    }
-  }
-
-  if (letterShas.size === 0) {
-    throw new Error("No letter directories found in manifests");
-  }
-
-  return letterShas;
-}
-
-/**
- * Parse package identifier from manifest path
- * manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
- * → Microsoft.VisualStudioCode
- *
- * Note: When fetching from letter directory, path is relative:
- * Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
- * → Microsoft.VisualStudioCode
- */
-export function parsePackageIdentifier(path: string): PackageIdentifier | null {
-  // Try full path first: manifests/a/publisher/name/...
-  let match = path.match(/^manifests\/[a-z0-9]\/([^/]+)\/([^/]+)\//);
-  if (match) {
-    const [, publisher, name] = match;
-    return `${publisher}.${name}`;
-  }
-
-  // Try relative path: publisher/name/...
-  match = path.match(/^([^/]+)\/([^/]+)\//);
-  if (match) {
-    const [, publisher, name] = match;
-    return `${publisher}.${name}`;
-  }
-
-  return null;
-}
-
-/**
- * Parse version from manifest path
- * manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
- * → 1.95.0
- *
- * Note: When fetching from letter directory, path is relative:
- * Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
- * → 1.95.0
- */
-export function parseVersion(path: string): PackageVersion | null {
-  // Try full path first: manifests/a/publisher/name/version/...
-  let match = path.match(/^manifests\/[a-z0-9]\/[^/]+\/[^/]+\/([^/]+)\//);
-  if (match && match[1]) {
-    return match[1];
-  }
-
-  // Try relative path: publisher/name/version/...
-  match = path.match(/^[^/]+\/[^/]+\/([^/]+)\//);
-  if (match && match[1]) {
-    return match[1];
-  }
-
-  return null;
-}
-
-/**
- * Build package index from tree data
- * Map<PackageIdentifier, Set<Version>>
+ * Build package index from index.db
+ * Map<PackageIdentifier, Set<PackageVersion>>
  */
 export async function buildPackageIndex(
   event?: H3Event,
 ): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
-  const storage = cacheStorage;
-  const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
-  const UPDATE_INTERVAL = 600; // 10 minutes
+  const db = await getIndexDb(event);
 
-  // Check cache metadata
-  const meta = await storage.getMeta(cacheKey);
-  const now = new Date();
+  const rows = db
+    .query<{ id: string; version: string }, []>(
+      `SELECT i.id, v.version
+       FROM manifest m
+       JOIN ids i ON m.id = i.rowid
+       JOIN versions v ON m.version = v.rowid`,
+    )
+    .all();
 
-  // If cache exists and is within update interval, return it
-  if (meta?.mtime) {
-    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < UPDATE_INTERVAL) {
-      const cached = await storage.getItem(cacheKey);
-      if (cached) {
-        // Convert cached object back to Map with Set values
-        const cachedData = cached as Record<string, string[]>;
-        const index = new Map<PackageIdentifier, Set<PackageVersion>>();
-        for (const [pkgId, versions] of Object.entries(cachedData)) {
-          index.set(pkgId, new Set(versions));
-        }
-        return index;
-      }
-    }
-  }
-
-  // If cache is stale but exists, return stale cache and trigger background update
-  if (meta?.mtime && event) {
-    const cached = await storage.getItem(cacheKey);
-    if (cached) {
-      const cachedData = cached as Record<string, string[]>;
-      const staleIndex = new Map<PackageIdentifier, Set<PackageVersion>>();
-      for (const [pkgId, versions] of Object.entries(cachedData)) {
-        staleIndex.set(pkgId, new Set(versions));
-      }
-
-      // Trigger background update using event.waitUntil
-      event.waitUntil(
-        (async () => {
-          try {
-            await rebuildPackageIndex();
-          } catch (error) {
-            console.error("Failed to rebuild package index in background:", error);
-          }
-        })(),
-      );
-
-      return staleIndex;
-    }
-  }
-
-  // No cache available, build synchronously
-  return await rebuildPackageIndex();
-}
-
-/**
- * Rebuild the package index from GitHub
- */
-async function rebuildPackageIndex(): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
-  const storage = cacheStorage;
-  const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
-
-  // Get all letter directory SHAs
-  const letterShas = await getLetterDirectoryShas();
-
-  // Fetch all letter directory paths in parallel
-  const letterPromises = Array.from(letterShas.entries()).map(
-    async ([letter, sha]): Promise<{
-      letter: string;
-      paths?: string[];
-      success: boolean;
-    }> => {
-      try {
-        const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
-        return { letter, paths, success: true };
-      } catch (error) {
-        console.error(`Failed to fetch tree for letter ${letter}:`, error);
-        return { letter, success: false };
-      }
-    },
-  );
-
-  const letterResults = await Promise.allSettled(letterPromises);
-
-  // Build index from all letter paths
   const index = new Map<PackageIdentifier, Set<PackageVersion>>();
-
-  for (const result of letterResults) {
-    if (result.status === "rejected" || !result.value.success) {
-      continue;
+  for (const row of rows) {
+    if (!index.has(row.id)) {
+      index.set(row.id, new Set());
     }
-
-    const { paths } = result.value;
-
-    if (!paths) {
-      continue;
-    }
-
-    for (const path of paths) {
-      // Only process YAML files
-      if (!path.endsWith(".yaml")) continue;
-
-      const pkgId = parsePackageIdentifier(path);
-      const version = parseVersion(path);
-
-      if (pkgId && version) {
-        if (!index.has(pkgId)) {
-          index.set(pkgId, new Set());
-        }
-        index.get(pkgId)!.add(version);
-      }
-    }
+    index.get(row.id)!.add(row.version);
   }
-
-  // Convert to plain object for caching
-  const cacheData: Record<string, string[]> = {};
-  for (const [pkgId, versions] of index.entries()) {
-    cacheData[pkgId] = Array.from(versions);
-  }
-
-  // Cache the index and set metadata
-  await storage.setItem(cacheKey, cacheData);
-  await storage.setMeta(cacheKey, { mtime: new Date() });
 
   return index;
 }
 
+// --- Version manifest paths ---
+
 /**
- * Get all manifest file paths for a specific version
- * @returns Array of manifest file paths (full repository paths)
+ * Construct deterministic GitHub manifest file paths from PackageIdentifier + Version
  */
-export async function getVersionManifests(
+export function getVersionManifests(
   packageId: PackageIdentifier,
   version: PackageVersion,
-): Promise<string[]> {
+): string[] {
   const parts = packageId.split(".");
-  if (parts.length < 2) {
-    return [];
-  }
+  if (parts.length < 2) return [];
 
   const [publisher, name] = parts;
-  if (!publisher || !name) {
-    return [];
-  }
+  if (!publisher || !name) return [];
 
-  const firstChar = publisher[0];
-  if (!firstChar) {
-    return [];
-  }
+  const letter = publisher[0]?.toLowerCase();
+  if (!letter) return [];
 
-  const letter = firstChar.toLowerCase();
+  const basePath = `manifests/${letter}/${publisher}/${name}/${version}`;
 
-  // Get all letter directory SHAs
-  const letterShas = await getLetterDirectoryShas();
-  const sha = letterShas.get(letter);
-
-  if (!sha) {
-    return [];
-  }
-
-  // Reuse cached paths (consistent with buildPackageIndex)
-  const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
-  const pathPrefix = `${publisher}/${name}/${version}/`;
-
-  return paths
-    .filter((path) => path.startsWith(pathPrefix) && path.endsWith(".yaml"))
-    .map((path) => `manifests/${letter}/${path}`);
+  return [
+    `${basePath}/${packageId}.yaml`,
+    `${basePath}/${packageId}.installer.yaml`,
+    `${basePath}/${packageId}.locale.en-US.yaml`,
+  ];
 }
+
+/**
+ * Get the default locale manifest path for a specific version
+ */
+export function getDefaultLocaleManifestPath(
+  packageId: PackageIdentifier,
+  version: PackageVersion,
+  locale: string = "en-US",
+): string {
+  const parts = packageId.split(".");
+  if (parts.length < 2) return "";
+
+  const publisher = parts[0];
+  const name = parts[1];
+  if (!publisher || !name) return "";
+
+  const letter = publisher[0]?.toLowerCase();
+  if (!letter) return "";
+
+  return `manifests/${letter}/${publisher}/${name}/${version}/${packageId}.locale.${locale}.yaml`;
+}
+
+// --- Search ---
+
+/**
+ * Convert MatchType + keyword to SQL LIKE pattern
+ */
+function toSqlPattern(keyword: string, matchType: MatchType): string {
+  const kw = keyword.toLowerCase();
+  switch (matchType) {
+    case "Exact":
+      return kw;
+    case "CaseInsensitive":
+    case "Substring":
+      return `%${kw}%`;
+    case "StartsWith":
+      return `${kw}%`;
+    case "Wildcard":
+      return kw.replace(/\*/g, "%");
+    default:
+      return `%${kw}%`;
+  }
+}
+
+/**
+ * Get the SQL table/column for a PackageMatchField
+ */
+function getFieldTable(field: PackageMatchField): string | null {
+  switch (field) {
+    case "PackageIdentifier":
+      return "i.id";
+    case "PackageName":
+      return "n.name";
+    case "Moniker":
+      return "mk.moniker";
+    case "Command":
+      return null; // Handled via EXISTS subquery
+    case "Tag":
+      return null; // Handled via EXISTS subquery
+    case "PackageFamilyName":
+      return null; // Handled via EXISTS subquery
+    case "ProductCode":
+      return null; // Handled via EXISTS subquery
+    case "UpgradeCode":
+      return null; // Handled via EXISTS subquery
+    case "NormalizedPackageNameAndPublisher":
+      return null; // Special handling — joins two tables
+    case "Market":
+      return null; // Not supported
+    case "HasInstallerType":
+      return null; // Not supported
+    default:
+      return null;
+  }
+}
+
+/**
+ * Search packages with multi-field support
+ */
+export function searchPackages(
+  db: Database,
+  options: {
+    keyword?: string;
+    matchType?: MatchType;
+    maximumResults?: number;
+    inclusions?: SearchRequestMatch[];
+    filters?: SearchRequestMatch[];
+  },
+): ManifestSearchResponse[] {
+  const { keyword, matchType, maximumResults, inclusions, filters } = options;
+
+  // Build WHERE clauses
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  // Main keyword search across ids, names, monikers
+  if (keyword) {
+    const pattern = toSqlPattern(keyword, matchType || "CaseInsensitive");
+    conditions.push(
+      `(i.id LIKE ?1 COLLATE NOCASE OR n.name LIKE ?1 COLLATE NOCASE OR mk.moniker LIKE ?1 COLLATE NOCASE)`,
+    );
+    params.push(pattern);
+  }
+
+  // Inclusions (AND semantics — all must match)
+  if (inclusions) {
+    for (const inc of inclusions) {
+      if (!inc.KeyWord || !inc.PackageMatchField) continue;
+
+      const column = getFieldTable(inc.PackageMatchField);
+      if (!column) continue;
+
+      const pattern = toSqlPattern(inc.KeyWord, inc.MatchType || "CaseInsensitive");
+      const paramIdx = params.length + 1;
+
+      if (inc.PackageMatchField === "Command") {
+        conditions.push(
+          `EXISTS (SELECT 1 FROM commands_map cm JOIN commands c ON c.rowid = cm.command WHERE cm.manifest = m.rowid AND c.command LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (inc.PackageMatchField === "Tag") {
+        conditions.push(
+          `EXISTS (SELECT 1 FROM tags_map tm JOIN tags t ON t.rowid = tm.tag WHERE tm.manifest = m.rowid AND t.tag LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (inc.PackageMatchField === "PackageFamilyName") {
+        conditions.push(
+          `EXISTS (SELECT 1 FROM pfns_map pm JOIN pfns p ON p.rowid = pm.pfn WHERE pm.manifest = m.rowid AND p.pfn LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (inc.PackageMatchField === "ProductCode") {
+        conditions.push(
+          `EXISTS (SELECT 1 FROM productcodes_map pcm JOIN productcodes pc ON pc.rowid = pcm.productcode WHERE pcm.manifest = m.rowid AND pc.productcode LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (inc.PackageMatchField === "UpgradeCode") {
+        conditions.push(
+          `EXISTS (SELECT 1 FROM upgradecodes_map ucm JOIN upgradecodes uc ON uc.rowid = ucm.upgradecode WHERE ucm.manifest = m.rowid AND uc.upgradecode LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (inc.PackageMatchField === "NormalizedPackageNameAndPublisher") {
+        conditions.push(
+          `(EXISTS (SELECT 1 FROM norm_names_map nnm JOIN norm_names nn ON nn.rowid = nnm.norm_name WHERE nnm.manifest = m.rowid AND nn.norm_name LIKE ?${paramIdx} COLLATE NOCASE) OR EXISTS (SELECT 1 FROM norm_publishers_map npm JOIN norm_publishers np ON np.rowid = npm.norm_publisher WHERE npm.manifest = m.rowid AND np.norm_publisher LIKE ?${paramIdx} COLLATE NOCASE))`,
+        );
+      } else {
+        // Direct column match (PackageIdentifier, PackageName, Moniker)
+        conditions.push(`${column} LIKE ?${paramIdx} COLLATE NOCASE`);
+      }
+      params.push(pattern);
+    }
+  }
+
+  // Filters (NOT semantics — must not match)
+  if (filters) {
+    for (const f of filters) {
+      if (!f.KeyWord || !f.PackageMatchField) continue;
+
+      const column = getFieldTable(f.PackageMatchField);
+      if (!column) continue;
+
+      const pattern = toSqlPattern(f.KeyWord, f.MatchType || "CaseInsensitive");
+      const paramIdx = params.length + 1;
+
+      if (f.PackageMatchField === "Command") {
+        conditions.push(
+          `NOT EXISTS (SELECT 1 FROM commands_map cm JOIN commands c ON c.rowid = cm.command WHERE cm.manifest = m.rowid AND c.command LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (f.PackageMatchField === "Tag") {
+        conditions.push(
+          `NOT EXISTS (SELECT 1 FROM tags_map tm JOIN tags t ON t.rowid = tm.tag WHERE tm.manifest = m.rowid AND t.tag LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (f.PackageMatchField === "PackageFamilyName") {
+        conditions.push(
+          `NOT EXISTS (SELECT 1 FROM pfns_map pm JOIN pfns p ON p.rowid = pm.pfn WHERE pm.manifest = m.rowid AND p.pfn LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (f.PackageMatchField === "ProductCode") {
+        conditions.push(
+          `NOT EXISTS (SELECT 1 FROM productcodes_map pcm JOIN productcodes pc ON pc.rowid = pcm.productcode WHERE pcm.manifest = m.rowid AND pc.productcode LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (f.PackageMatchField === "UpgradeCode") {
+        conditions.push(
+          `NOT EXISTS (SELECT 1 FROM upgradecodes_map ucm JOIN upgradecodes uc ON uc.rowid = ucm.upgradecode WHERE ucm.manifest = m.rowid AND uc.upgradecode LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else if (f.PackageMatchField === "NormalizedPackageNameAndPublisher") {
+        conditions.push(
+          `NOT EXISTS (SELECT 1 FROM norm_names_map nnm JOIN norm_names nn ON nn.rowid = nnm.norm_name WHERE nnm.manifest = m.rowid AND nn.norm_name LIKE ?${paramIdx} COLLATE NOCASE) AND NOT EXISTS (SELECT 1 FROM norm_publishers_map npm JOIN norm_publishers np ON np.rowid = npm.norm_publisher WHERE npm.manifest = m.rowid AND np.norm_publisher LIKE ?${paramIdx} COLLATE NOCASE)`,
+        );
+      } else {
+        conditions.push(`${column} NOT LIKE ?${paramIdx} COLLATE NOCASE`);
+      }
+      params.push(pattern);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limitClause = maximumResults ? `LIMIT ${maximumResults}` : "";
+
+  const sql = `
+    SELECT DISTINCT i.id, n.name, v.version, ch.channel
+    FROM manifest m
+    JOIN ids i ON m.id = i.rowid
+    JOIN names n ON m.name = n.rowid
+    JOIN versions v ON m.version = v.rowid
+    JOIN monikers mk ON m.moniker = mk.rowid
+    JOIN channels ch ON m.channel = ch.rowid
+    ${whereClause}
+    ${limitClause}
+  `;
+
+  const rows = db
+    .query<{ id: string; name: string; version: string; channel: string }, string[]>(sql)
+    .all(...params);
+
+  // Group by package id
+  const packageMap = new Map<string, { name: string; versions: ManifestSearchVersionResponse[] }>();
+
+  for (const row of rows) {
+    let entry = packageMap.get(row.id);
+    if (!entry) {
+      entry = { name: row.name, versions: [] };
+      packageMap.set(row.id, entry);
+    }
+    entry.versions.push({
+      PackageVersion: row.version,
+      ...(row.channel && { Channel: row.channel }),
+    });
+  }
+
+  // Build response, sort versions descending per package
+  const results: ManifestSearchResponse[] = [];
+  for (const [id, data] of packageMap.entries()) {
+    data.versions.sort((a, b) => b.PackageVersion.localeCompare(a.PackageVersion));
+    results.push({
+      PackageIdentifier: id,
+      PackageName: data.name,
+      Versions: data.versions,
+    });
+  }
+
+  return results;
+}
+
+// --- Manifest content fetching ---
 
 /**
  * Fetch manifest file content directly from GitHub raw URL with caching
  */
 export async function fetchManifestContent(manifestPath: string): Promise<string> {
-  const storage = cacheStorage;
   const cacheKey = `registry/winget/${GITHUB_REPO}/files/${manifestPath}`;
 
   // Try to get from cache
-  const cached = await storage.getItem(cacheKey);
+  const cached = await cacheStorage.getItem(cacheKey);
   if (cached && typeof cached === "string") {
     return cached;
   }
@@ -655,7 +646,7 @@ export async function fetchManifestContent(manifestPath: string): Promise<string
   const content = await response.text();
 
   // Store in cache
-  await storage.setItem(cacheKey, content);
+  await cacheStorage.setItem(cacheKey, content);
 
   return content;
 }

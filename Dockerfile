@@ -1,6 +1,6 @@
 # use the official Bun image
 # see all versions at https://hub.docker.com/r/oven/bun/tags
-FROM oven/bun:1 AS build
+FROM oven/bun:1-slim AS build
 WORKDIR /app
 
 COPY package.json bun.lock* ./
@@ -14,10 +14,10 @@ COPY . .
 # Build with node-cluster preset
 ENV NITRO_PRESET=node_cluster
 ENV NODE_ENV=production
-RUN bun --bun run build
+RUN bun run build
 
 # copy production dependencies and source code into final image
-FROM oven/bun:1-alpine AS production
+FROM oven/bun:1-slim AS production
 WORKDIR /app
 
 # Copy .output directory

@@ -14,7 +14,7 @@ import {
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet API"],
+    tags: ["Installers", "Get"],
     summary: "Get specific installer for a package version",
     description: "Retrieve detailed installer information for a specific package version",
     parameters: [
@@ -93,7 +93,7 @@ export default defineHandler(async (event) => {
   }
 
   // Get all manifest files for this version
-  const manifestFiles = await getVersionManifests(packageId, version);
+  const manifestFiles = getVersionManifests(packageId, version);
 
   if (manifestFiles.length === 0) {
     return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);

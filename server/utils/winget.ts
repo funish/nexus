@@ -205,18 +205,26 @@ export type PackageMatchField =
 export interface SearchRequestMatch {
   KeyWord?: string;
   MatchType?: MatchType;
-  PackageMatchField?: PackageMatchField;
 }
 
 /**
- * Manifest search request (adapted for GET query parameters)
+ * Search request package match filter (Inclusions/Filters item)
+ * Spec: { PackageMatchField, RequestMatch: { KeyWord, MatchType } }
+ */
+export interface SearchRequestPackageMatchFilter {
+  PackageMatchField: PackageMatchField;
+  RequestMatch: SearchRequestMatch;
+}
+
+/**
+ * Manifest search request
  */
 export interface ManifestSearchRequest {
   MaximumResults?: number;
   FetchAllManifests?: boolean;
   Query?: SearchRequestMatch;
-  Inclusions?: SearchRequestMatch[];
-  Filters?: SearchRequestMatch[];
+  Inclusions?: SearchRequestPackageMatchFilter[];
+  Filters?: SearchRequestPackageMatchFilter[];
 }
 
 /**
@@ -225,6 +233,10 @@ export interface ManifestSearchRequest {
 export interface ManifestSearchVersionResponse {
   PackageVersion: PackageVersion;
   Channel?: string;
+  PackageFamilyNames?: string[];
+  ProductCodes?: string[];
+  AppsAndFeaturesEntryVersions?: string[];
+  UpgradeCodes?: string[];
 }
 
 /**
@@ -232,8 +244,8 @@ export interface ManifestSearchVersionResponse {
  */
 export interface ManifestSearchResponse {
   PackageIdentifier: PackageIdentifier;
-  PackageName?: string;
-  Publisher?: string;
+  PackageName: string;
+  Publisher: string;
   Versions: ManifestSearchVersionResponse[];
 }
 
@@ -248,18 +260,26 @@ export interface ManifestSearchResult {
 
 // --- index.db management ---
 
-// --- index.db management ---
-
 /** Cached Database instance */
 let cachedDb: Database | null = null;
 /** Timestamp when cachedDb was loaded */
 let cachedDbTime = 0;
 
 /**
+ * Create missing performance indexes on map tables.
+ * tags_map and commands_map lack manifest indexes in the source index.db,
+ * which causes NOT EXISTS subqueries to do full table scans (127k rows).
+ */
+export function createMissingIndexes(db: Database): void {
+  db.run("CREATE INDEX IF NOT EXISTS tags_map_manifest_idx ON tags_map(manifest)");
+  db.run("CREATE INDEX IF NOT EXISTS commands_map_manifest_idx ON commands_map(manifest)");
+}
+
+/**
  * Download source.msix and extract Public/index.db into cacheStorage,
  * then update the in-memory cached instance
  */
-async function refreshIndexDb(): Promise<void> {
+export async function refreshIndexDb(): Promise<void> {
   const response = await fetch(SOURCE_MSIX_URL);
   if (!response.ok) {
     throw new Error(`Failed to download source.msix: ${response.status}`);
@@ -279,6 +299,7 @@ async function refreshIndexDb(): Promise<void> {
   // Replace in-memory instance
   cachedDb?.close();
   cachedDb = Database.deserialize(indexDb);
+  createMissingIndexes(cachedDb);
   cachedDbTime = Date.now();
 }
 
@@ -290,6 +311,7 @@ export async function getIndexDb(event?: H3Event): Promise<Database> {
   const age = cachedDb ? (Date.now() - cachedDbTime) / 1000 : Infinity;
 
   if (cachedDb && age < UPDATE_INTERVAL) {
+    createMissingIndexes(cachedDb);
     return cachedDb;
   }
 
@@ -299,6 +321,7 @@ export async function getIndexDb(event?: H3Event): Promise<Database> {
     if (data) {
       const meta = await cacheStorage.getMeta(INDEX_DB_KEY);
       cachedDb = Database.deserialize(new Uint8Array(data as ArrayBuffer));
+      createMissingIndexes(cachedDb);
       cachedDbTime = meta?.mtime ? new Date(meta.mtime).getTime() : Date.now();
 
       // Check if loaded data is still fresh
@@ -411,7 +434,7 @@ export function getDefaultLocaleManifestPath(
 /**
  * Convert MatchType + keyword to SQL LIKE pattern
  */
-function toSqlPattern(keyword: string, matchType: MatchType): string {
+export function toSqlPattern(keyword: string, matchType: MatchType): string {
   const kw = keyword.toLowerCase();
   switch (matchType) {
     case "Exact":
@@ -431,7 +454,7 @@ function toSqlPattern(keyword: string, matchType: MatchType): string {
 /**
  * Get the SQL table/column for a PackageMatchField
  */
-function getFieldTable(field: PackageMatchField): string | null {
+export function getFieldTable(field: PackageMatchField): string | null {
   switch (field) {
     case "PackageIdentifier":
       return "i.id";
@@ -469,8 +492,8 @@ export function searchPackages(
     keyword?: string;
     matchType?: MatchType;
     maximumResults?: number;
-    inclusions?: SearchRequestMatch[];
-    filters?: SearchRequestMatch[];
+    inclusions?: SearchRequestPackageMatchFilter[];
+    filters?: SearchRequestPackageMatchFilter[];
   },
 ): ManifestSearchResponse[] {
   const { keyword, matchType, maximumResults, inclusions, filters } = options;
@@ -491,40 +514,18 @@ export function searchPackages(
   // Inclusions (AND semantics — all must match)
   if (inclusions) {
     for (const inc of inclusions) {
-      if (!inc.KeyWord || !inc.PackageMatchField) continue;
+      if (!inc.RequestMatch?.KeyWord || !inc.PackageMatchField) continue;
 
       const column = getFieldTable(inc.PackageMatchField);
-      if (!column) continue;
-
-      const pattern = toSqlPattern(inc.KeyWord, inc.MatchType || "CaseInsensitive");
+      const pattern = toSqlPattern(
+        inc.RequestMatch.KeyWord,
+        inc.RequestMatch.MatchType || "CaseInsensitive",
+      );
       const paramIdx = params.length + 1;
 
-      if (inc.PackageMatchField === "Command") {
-        conditions.push(
-          `EXISTS (SELECT 1 FROM commands_map cm JOIN commands c ON c.rowid = cm.command WHERE cm.manifest = m.rowid AND c.command LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (inc.PackageMatchField === "Tag") {
-        conditions.push(
-          `EXISTS (SELECT 1 FROM tags_map tm JOIN tags t ON t.rowid = tm.tag WHERE tm.manifest = m.rowid AND t.tag LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (inc.PackageMatchField === "PackageFamilyName") {
-        conditions.push(
-          `EXISTS (SELECT 1 FROM pfns_map pm JOIN pfns p ON p.rowid = pm.pfn WHERE pm.manifest = m.rowid AND p.pfn LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (inc.PackageMatchField === "ProductCode") {
-        conditions.push(
-          `EXISTS (SELECT 1 FROM productcodes_map pcm JOIN productcodes pc ON pc.rowid = pcm.productcode WHERE pcm.manifest = m.rowid AND pc.productcode LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (inc.PackageMatchField === "UpgradeCode") {
-        conditions.push(
-          `EXISTS (SELECT 1 FROM upgradecodes_map ucm JOIN upgradecodes uc ON uc.rowid = ucm.upgradecode WHERE ucm.manifest = m.rowid AND uc.upgradecode LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (inc.PackageMatchField === "NormalizedPackageNameAndPublisher") {
-        conditions.push(
-          `(EXISTS (SELECT 1 FROM norm_names_map nnm JOIN norm_names nn ON nn.rowid = nnm.norm_name WHERE nnm.manifest = m.rowid AND nn.norm_name LIKE ?${paramIdx} COLLATE NOCASE) OR EXISTS (SELECT 1 FROM norm_publishers_map npm JOIN norm_publishers np ON np.rowid = npm.norm_publisher WHERE npm.manifest = m.rowid AND np.norm_publisher LIKE ?${paramIdx} COLLATE NOCASE))`,
-        );
+      if (!column) {
+        conditions.push(buildSubqueryCondition(inc.PackageMatchField, paramIdx, false));
       } else {
-        // Direct column match (PackageIdentifier, PackageName, Moniker)
         conditions.push(`${column} LIKE ?${paramIdx} COLLATE NOCASE`);
       }
       params.push(pattern);
@@ -534,38 +535,17 @@ export function searchPackages(
   // Filters (NOT semantics — must not match)
   if (filters) {
     for (const f of filters) {
-      if (!f.KeyWord || !f.PackageMatchField) continue;
+      if (!f.RequestMatch?.KeyWord || !f.PackageMatchField) continue;
 
       const column = getFieldTable(f.PackageMatchField);
-      if (!column) continue;
-
-      const pattern = toSqlPattern(f.KeyWord, f.MatchType || "CaseInsensitive");
+      const pattern = toSqlPattern(
+        f.RequestMatch.KeyWord,
+        f.RequestMatch.MatchType || "CaseInsensitive",
+      );
       const paramIdx = params.length + 1;
 
-      if (f.PackageMatchField === "Command") {
-        conditions.push(
-          `NOT EXISTS (SELECT 1 FROM commands_map cm JOIN commands c ON c.rowid = cm.command WHERE cm.manifest = m.rowid AND c.command LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (f.PackageMatchField === "Tag") {
-        conditions.push(
-          `NOT EXISTS (SELECT 1 FROM tags_map tm JOIN tags t ON t.rowid = tm.tag WHERE tm.manifest = m.rowid AND t.tag LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (f.PackageMatchField === "PackageFamilyName") {
-        conditions.push(
-          `NOT EXISTS (SELECT 1 FROM pfns_map pm JOIN pfns p ON p.rowid = pm.pfn WHERE pm.manifest = m.rowid AND p.pfn LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (f.PackageMatchField === "ProductCode") {
-        conditions.push(
-          `NOT EXISTS (SELECT 1 FROM productcodes_map pcm JOIN productcodes pc ON pc.rowid = pcm.productcode WHERE pcm.manifest = m.rowid AND pc.productcode LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (f.PackageMatchField === "UpgradeCode") {
-        conditions.push(
-          `NOT EXISTS (SELECT 1 FROM upgradecodes_map ucm JOIN upgradecodes uc ON uc.rowid = ucm.upgradecode WHERE ucm.manifest = m.rowid AND uc.upgradecode LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
-      } else if (f.PackageMatchField === "NormalizedPackageNameAndPublisher") {
-        conditions.push(
-          `NOT EXISTS (SELECT 1 FROM norm_names_map nnm JOIN norm_names nn ON nn.rowid = nnm.norm_name WHERE nnm.manifest = m.rowid AND nn.norm_name LIKE ?${paramIdx} COLLATE NOCASE) AND NOT EXISTS (SELECT 1 FROM norm_publishers_map npm JOIN norm_publishers np ON np.rowid = npm.norm_publisher WHERE npm.manifest = m.rowid AND np.norm_publisher LIKE ?${paramIdx} COLLATE NOCASE)`,
-        );
+      if (!column) {
+        conditions.push(buildSubqueryCondition(f.PackageMatchField, paramIdx, true));
       } else {
         conditions.push(`${column} NOT LIKE ?${paramIdx} COLLATE NOCASE`);
       }
@@ -577,29 +557,41 @@ export function searchPackages(
   const limitClause = maximumResults ? `LIMIT ${maximumResults}` : "";
 
   const sql = `
-    SELECT DISTINCT i.id, n.name, v.version, ch.channel
+    SELECT DISTINCT i.id, n.name, v.version, ch.channel, np.norm_publisher
     FROM manifest m
     JOIN ids i ON m.id = i.rowid
     JOIN names n ON m.name = n.rowid
     JOIN versions v ON m.version = v.rowid
     JOIN monikers mk ON m.moniker = mk.rowid
     JOIN channels ch ON m.channel = ch.rowid
+    LEFT JOIN norm_publishers_map npm ON npm.manifest = m.rowid
+    LEFT JOIN norm_publishers np ON np.rowid = npm.norm_publisher
     ${whereClause}
     ${limitClause}
   `;
 
   const rows = db
-    .query<{ id: string; name: string; version: string; channel: string }, string[]>(sql)
+    .query<
+      { id: string; name: string; version: string; channel: string; norm_publisher: string | null },
+      string[]
+    >(sql)
     .all(...params);
 
   // Group by package id
-  const packageMap = new Map<string, { name: string; versions: ManifestSearchVersionResponse[] }>();
+  const packageMap = new Map<
+    string,
+    { name: string; publisher: string; versions: ManifestSearchVersionResponse[] }
+  >();
 
   for (const row of rows) {
     let entry = packageMap.get(row.id);
     if (!entry) {
-      entry = { name: row.name, versions: [] };
+      entry = { name: row.name, publisher: row.norm_publisher || "", versions: [] };
       packageMap.set(row.id, entry);
+    }
+    // Prefer non-empty publisher across versions
+    if (row.norm_publisher && !entry.publisher) {
+      entry.publisher = row.norm_publisher;
     }
     entry.versions.push({
       PackageVersion: row.version,
@@ -614,11 +606,39 @@ export function searchPackages(
     results.push({
       PackageIdentifier: id,
       PackageName: data.name,
+      Publisher: data.publisher,
       Versions: data.versions,
     });
   }
 
   return results;
+}
+
+/**
+ * Build EXISTS/NOT EXISTS subquery condition for map-table-based PackageMatchFields
+ */
+export function buildSubqueryCondition(
+  field: PackageMatchField,
+  paramIdx: number,
+  negate: boolean,
+): string {
+  const not = negate ? "NOT " : "";
+  switch (field) {
+    case "Command":
+      return `${not}EXISTS (SELECT 1 FROM commands_map cm JOIN commands c ON c.rowid = cm.command WHERE cm.manifest = m.rowid AND c.command LIKE ?${paramIdx} COLLATE NOCASE)`;
+    case "Tag":
+      return `${not}EXISTS (SELECT 1 FROM tags_map tm JOIN tags t ON t.rowid = tm.tag WHERE tm.manifest = m.rowid AND t.tag LIKE ?${paramIdx} COLLATE NOCASE)`;
+    case "PackageFamilyName":
+      return `${not}EXISTS (SELECT 1 FROM pfns_map pm JOIN pfns p ON p.rowid = pm.pfn WHERE pm.manifest = m.rowid AND p.pfn LIKE ?${paramIdx} COLLATE NOCASE)`;
+    case "ProductCode":
+      return `${not}EXISTS (SELECT 1 FROM productcodes_map pcm JOIN productcodes pc ON pc.rowid = pcm.productcode WHERE pcm.manifest = m.rowid AND pc.productcode LIKE ?${paramIdx} COLLATE NOCASE)`;
+    case "UpgradeCode":
+      return `${not}EXISTS (SELECT 1 FROM upgradecodes_map ucm JOIN upgradecodes uc ON uc.rowid = ucm.upgradecode WHERE ucm.manifest = m.rowid AND uc.upgradecode LIKE ?${paramIdx} COLLATE NOCASE)`;
+    case "NormalizedPackageNameAndPublisher":
+      return `(${not}EXISTS (SELECT 1 FROM norm_names_map nnm JOIN norm_names nn ON nn.rowid = nnm.norm_name WHERE nnm.manifest = m.rowid AND nn.norm_name LIKE ?${paramIdx} COLLATE NOCASE) ${negate ? "AND" : "OR"} ${not}EXISTS (SELECT 1 FROM norm_publishers_map npm JOIN norm_publishers np ON np.rowid = npm.norm_publisher WHERE npm.manifest = m.rowid AND np.norm_publisher LIKE ?${paramIdx} COLLATE NOCASE))`;
+    default:
+      return "1=1"; // no-op for unsupported fields
+  }
 }
 
 // --- Manifest content fetching ---

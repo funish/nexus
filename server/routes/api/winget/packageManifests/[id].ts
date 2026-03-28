@@ -12,7 +12,7 @@ import {
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet API"],
+    tags: ["Package Manifests", "Get"],
     summary: "Get package manifest",
     description: "Retrieve a full package manifest with all versions, locales, and installers",
     parameters: [
@@ -51,10 +51,11 @@ defineRouteMeta({
 
 interface VersionManifest {
   PackageVersion: string;
-  DefaultLocale?: Record<string, any>;
+  DefaultLocale?: string;
   Channel?: string | null;
   Locales?: Record<string, any>[];
   Installers?: Record<string, any>[];
+  Manifest?: Record<string, any>;
 }
 
 /**
@@ -99,7 +100,7 @@ export default defineHandler(async (event: H3Event) => {
 
   await Promise.allSettled(
     sortedVersions.map(async (version) => {
-      const manifestFiles = await getVersionManifests(packageId, version);
+      const manifestFiles = getVersionManifests(packageId, version);
       if (manifestFiles.length === 0) return;
 
       const versionEntry: VersionManifest = { PackageVersion: version };
@@ -111,8 +112,9 @@ export default defineHandler(async (event: H3Event) => {
 
         if (filename === `${packageId}.yaml`) {
           // Version manifest
-          versionEntry.DefaultLocale = parsed;
+          versionEntry.DefaultLocale = parsed.DefaultLocale;
           versionEntry.Channel = parsed.Channel;
+          versionEntry.Manifest = parsed;
         } else if (filename.match(/\.installer\.yaml$/)) {
           // Installer manifest
           versionEntry.Installers = parsed.Installers;

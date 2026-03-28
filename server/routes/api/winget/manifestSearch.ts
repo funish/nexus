@@ -1,12 +1,12 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, readBody } from "nitro/h3";
 
-import type { MatchType, ManifestSearchRequest, ManifestSearchResult } from "../../../utils/winget";
+import type { ManifestSearchRequest, ManifestSearchResult, MatchType } from "../../../utils/winget";
 import { getIndexDb, searchPackages } from "../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet API"],
+    tags: ["Package Manifests"],
     summary: "Search WinGet packages",
     description: "Search for WinGet packages by keyword with various match types",
     parameters: [
@@ -104,8 +104,8 @@ defineRouteMeta({
  *   "MaximumResults": 10,
  *   "FetchAllManifests": false,
  *   "Query": { "KeyWord": "Adobe", "MatchType": "CaseInsensitive" },
- *   "Inclusions": [{ "KeyWord": "Microsoft", "PackageMatchField": "PackageName", "MatchType": "CaseInsensitive" }],
- *   "Filters": [{ "KeyWord": "preview", "PackageMatchField": "Tag", "MatchType": "CaseInsensitive" }]
+ *   "Inclusions": [{ "PackageMatchField": "PackageName", "RequestMatch": { "KeyWord": "Microsoft", "MatchType": "CaseInsensitive" } }],
+ *   "Filters": [{ "PackageMatchField": "Tag", "RequestMatch": { "KeyWord": "preview", "MatchType": "CaseInsensitive" } }]
  * }
  */
 export default defineHandler(async (event) => {

@@ -6,7 +6,7 @@ import { buildPackageIndex } from "../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet API"],
+    tags: ["Packages", "Get"],
     summary: "Get all WinGet packages",
     description: "Retrieve a paginated list of all WinGet packages with their versions",
     parameters: [

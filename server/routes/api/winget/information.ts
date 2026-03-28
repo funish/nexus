@@ -3,7 +3,7 @@ import { defineHandler } from "nitro/h3";
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet API"],
+    tags: ["Server", "Get"],
     summary: "Get server information",
     description: "Returns server information including supported API versions and capabilities",
     responses: {
@@ -50,6 +50,9 @@ export default defineHandler(() => {
       ServerSupportedVersions: ["1.4.0", "1.9.0"],
       RequiredPackageMatchFields: ["PackageIdentifier"],
       UnsupportedPackageMatchFields: ["Market", "HasInstallerType"],
+      UnsupportedQueryParameters: ["FetchAllManifests"],
+      RequiredQueryParameters: [],
+      Authentication: null,
     },
   };
 });

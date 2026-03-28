@@ -6,7 +6,7 @@ import { buildPackageIndex, createWinGetError } from "../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
-    tags: ["WinGet API"],
+    tags: ["Packages", "Get"],
     summary: "Get specific WinGet package",
     description: "Retrieve details of a specific WinGet package by its identifier",
     parameters: [
@@ -28,9 +28,15 @@ defineRouteMeta({
             schema: {
               type: "object",
               properties: {
-                PackageIdentifier: { type: "string" },
-                Versions: { type: "array", items: { type: "string" } },
+                Data: {
+                  type: "object",
+                  properties: {
+                    PackageIdentifier: { type: "string" },
+                  },
+                  required: ["PackageIdentifier"],
+                },
               },
+              required: ["Data"],
             },
           },
         },

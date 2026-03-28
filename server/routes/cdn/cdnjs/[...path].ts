@@ -1,9 +1,9 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
-import { useStorage } from "nitro/storage";
 import semver from "semver";
 
 import { getContentType } from "../../../utils/mime";
+import { cacheStorage } from "../../../utils/storage";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 defineRouteMeta({
@@ -58,7 +58,7 @@ async function getCachedFile(
   version: string,
   filepath: string,
 ): Promise<Uint8Array> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheKey = `cdn/cdnjs/${library}/${version}/${filepath}`;
 
   // Try to get from cache
@@ -90,7 +90,7 @@ async function getCachedFile(
 
 // Get file list for a library version from cdnjs API and cache in meta
 async function ensureCdnjsFileListCached(library: string, version: string): Promise<string[]> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/cdnjs/${library}/${version}`;
 
   // Check if already cached
@@ -121,7 +121,7 @@ async function ensureCdnjsFileListCached(library: string, version: string): Prom
 
 // Get file list from cache
 async function getCachedFileList(library: string, version: string): Promise<string[]> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/cdnjs/${library}/${version}`;
 
   const meta = await storage.getMeta(cacheBase);

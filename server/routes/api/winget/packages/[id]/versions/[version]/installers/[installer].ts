@@ -1,7 +1,6 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineCachedHandler } from "nitro/cache";
-import { getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 
 import type {
   InstallerSingleResponse,
@@ -76,92 +75,87 @@ defineRouteMeta({
  *
  * Response: InstallerSingleResponse
  */
-export default defineCachedHandler(
-  async (event) => {
-    const packageId = getRouterParam(event, "id");
-    const version = getRouterParam(event, "version");
-    const installerId = getRouterParam(event, "installer");
+export default defineHandler(async (event) => {
+  const packageId = getRouterParam(event, "id");
+  const version = getRouterParam(event, "version");
+  const installerId = getRouterParam(event, "installer");
 
-    if (!packageId || !version || !installerId) {
-      throw new HTTPError({
-        status: 400,
-        statusText: "PackageIdentifier, PackageVersion, and InstallerIdentifier are required",
-      });
-    }
+  if (!packageId || !version || !installerId) {
+    throw new HTTPError({
+      status: 400,
+      statusText: "PackageIdentifier, PackageVersion, and InstallerIdentifier are required",
+    });
+  }
 
-    // Get all manifest files for this version
-    const manifestFiles = await getVersionManifests(packageId, version);
+  // Get all manifest files for this version
+  const manifestFiles = await getVersionManifests(packageId, version);
 
-    if (manifestFiles.length === 0) {
+  if (manifestFiles.length === 0) {
+    throw new HTTPError({
+      status: 404,
+      statusText: `Version ${version} of package '${packageId}' not found`,
+    });
+  }
+
+  // Find installer manifest
+  const installerFilename = `${packageId}.installer.yaml`;
+  const installerManifestPath = manifestFiles.find(
+    (path) => path.split("/").pop() === installerFilename,
+  );
+
+  if (!installerManifestPath) {
+    throw new HTTPError({
+      status: 404,
+      statusText: `Installer manifest not found for version ${version} of package '${packageId}'`,
+    });
+  }
+
+  try {
+    const content = await fetchManifestContent(installerManifestPath);
+    const manifest = parseYAML(content) as Record<string, any>;
+
+    // Find the specific installer
+    if (!manifest.Installers || !Array.isArray(manifest.Installers)) {
       throw new HTTPError({
         status: 404,
-        statusText: `Version ${version} of package '${packageId}' not found`,
+        statusText: `No installers found in manifest`,
       });
     }
 
-    // Find installer manifest
-    const installerFilename = `${packageId}.installer.yaml`;
-    const installerManifestPath = manifestFiles.find(
-      (path) => path.split("/").pop() === installerFilename,
+    const installer = manifest.Installers.find(
+      (inst: any) => inst.InstallerIdentifier === installerId,
     );
 
-    if (!installerManifestPath) {
+    if (!installer) {
       throw new HTTPError({
         status: 404,
-        statusText: `Installer manifest not found for version ${version} of package '${packageId}'`,
+        statusText: `Installer '${installerId}' not found`,
       });
     }
 
-    try {
-      const content = await fetchManifestContent(installerManifestPath);
-      const manifest = parseYAML(content) as Record<string, any>;
+    const installerData: InstallerSchema = {
+      InstallerIdentifier: installer.InstallerIdentifier,
+      InstallerType: installer.InstallerType,
+      InstallerUrl: installer.InstallerUrl,
+      Architecture: installer.Architecture,
+      Scope: installer.Scope,
+      Language: installer.Language,
+    };
 
-      // Find the specific installer
-      if (!manifest.Installers || !Array.isArray(manifest.Installers)) {
-        throw new HTTPError({
-          status: 404,
-          statusText: `No installers found in manifest`,
-        });
-      }
+    const response: InstallerSingleResponse = {
+      Data: installerData,
+    };
 
-      const installer = manifest.Installers.find(
-        (inst: any) => inst.InstallerIdentifier === installerId,
-      );
+    event.res.headers.set("Content-Type", "application/json");
 
-      if (!installer) {
-        throw new HTTPError({
-          status: 404,
-          statusText: `Installer '${installerId}' not found`,
-        });
-      }
-
-      const installerData: InstallerSchema = {
-        InstallerIdentifier: installer.InstallerIdentifier,
-        InstallerType: installer.InstallerType,
-        InstallerUrl: installer.InstallerUrl,
-        Architecture: installer.Architecture,
-        Scope: installer.Scope,
-        Language: installer.Language,
-      };
-
-      const response: InstallerSingleResponse = {
-        Data: installerData,
-      };
-
-      event.res.headers.set("Content-Type", "application/json");
-
-      return response;
-    } catch (error) {
-      if (error instanceof HTTPError) {
-        throw error;
-      }
-      throw new HTTPError({
-        status: 500,
-        statusText: `Failed to parse installer manifest: ${String(error)}`,
-      });
+    return response;
+  } catch (error) {
+    if (error instanceof HTTPError) {
+      throw error;
     }
-  },
-  {
-    maxAge: 3600,
-  },
-);
+    throw new HTTPError({
+      status: 500,
+      statusText: `Failed to parse installer manifest: ${String(error)}`,
+    });
+  }
+});

@@ -1,7 +1,6 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineCachedHandler } from "nitro/cache";
-import { getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 
 import type { LocaleMultipleResponse, LocaleSchema } from "../../../../../../../utils/winget";
 import { getVersionManifests, fetchManifestContent } from "../../../../../../../utils/winget";
@@ -70,69 +69,64 @@ defineRouteMeta({
  *
  * Response: LocaleMultipleResponse
  */
-export default defineCachedHandler(
-  async (event) => {
-    const packageId = getRouterParam(event, "id");
-    const version = getRouterParam(event, "version");
+export default defineHandler(async (event) => {
+  const packageId = getRouterParam(event, "id");
+  const version = getRouterParam(event, "version");
 
-    if (!packageId || !version) {
-      throw new HTTPError({
-        status: 400,
-        statusText: "PackageIdentifier and PackageVersion are required",
-      });
-    }
+  if (!packageId || !version) {
+    throw new HTTPError({
+      status: 400,
+      statusText: "PackageIdentifier and PackageVersion are required",
+    });
+  }
 
-    // Get all manifest files for this version
-    const manifestFiles = await getVersionManifests(packageId, version);
+  // Get all manifest files for this version
+  const manifestFiles = await getVersionManifests(packageId, version);
 
-    if (manifestFiles.length === 0) {
-      throw new HTTPError({
-        status: 404,
-        statusText: `Version ${version} of package '${packageId}' not found`,
-      });
-    }
+  if (manifestFiles.length === 0) {
+    throw new HTTPError({
+      status: 404,
+      statusText: `Version ${version} of package '${packageId}' not found`,
+    });
+  }
 
-    // Find all locale manifests
-    const locales: LocaleSchema[] = [];
+  // Find all locale manifests
+  const locales: LocaleSchema[] = [];
 
-    for (const manifestPath of manifestFiles) {
-      const filename = manifestPath.split("/").pop()!;
+  for (const manifestPath of manifestFiles) {
+    const filename = manifestPath.split("/").pop()!;
 
-      // Match locale files: {PackageId}.locale.{locale}.yaml
-      const localeMatch = filename.match(/\.locale\.([^.]+)\.yaml$/);
+    // Match locale files: {PackageId}.locale.{locale}.yaml
+    const localeMatch = filename.match(/\.locale\.([^.]+)\.yaml$/);
 
-      if (localeMatch && localeMatch[1]) {
-        const locale = localeMatch[1];
+    if (localeMatch && localeMatch[1]) {
+      const locale = localeMatch[1];
 
-        try {
-          const content = await fetchManifestContent(manifestPath);
-          const manifest = parseYAML(content) as Record<string, any>;
+      try {
+        const content = await fetchManifestContent(manifestPath);
+        const manifest = parseYAML(content) as Record<string, any>;
 
-          locales.push({
-            PackageLocale: locale,
-            Publisher: manifest.Publisher,
-            PackageName: manifest.PackageName,
-            ShortDescription: manifest.ShortDescription,
-            Description: manifest.Description,
-          });
-        } catch {
-          // If parsing fails, add minimal locale info
-          locales.push({
-            PackageLocale: locale,
-          });
-        }
+        locales.push({
+          PackageLocale: locale,
+          Publisher: manifest.Publisher,
+          PackageName: manifest.PackageName,
+          ShortDescription: manifest.ShortDescription,
+          Description: manifest.Description,
+        });
+      } catch {
+        // If parsing fails, add minimal locale info
+        locales.push({
+          PackageLocale: locale,
+        });
       }
     }
+  }
 
-    const response: LocaleMultipleResponse = {
-      Data: locales,
-    };
+  const response: LocaleMultipleResponse = {
+    Data: locales,
+  };
 
-    event.res.headers.set("Content-Type", "application/json");
+  event.res.headers.set("Content-Type", "application/json");
 
-    return response;
-  },
-  {
-    maxAge: 3600,
-  },
-);
+  return response;
+});

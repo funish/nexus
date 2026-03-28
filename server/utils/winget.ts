@@ -1,6 +1,7 @@
 import type { H3Event } from "nitro/h3";
-import { useStorage } from "nitro/storage";
 import { env } from "std-env";
+
+import { cacheStorage } from "./storage";
 
 const GITHUB_REPO = "microsoft/winget-pkgs";
 const GITHUB_BRANCH = "master";
@@ -298,7 +299,7 @@ export async function getGitHubTree(
  * @returns Array of file paths
  */
 export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): Promise<string[]> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   // Replace slashes with dashes to avoid filesystem nesting issues
   const normalizedSuffix = cacheSuffix.replace(/\//g, "-");
   const cacheKey = `registry/winget/${GITHUB_REPO}/${normalizedSuffix}`;
@@ -343,7 +344,7 @@ export function filterManifestFiles(tree: GitHubTreeItem[]): GitHubTreeItem[] {
  * Get the SHA of the manifests directory
  */
 export async function getManifestsSha(): Promise<string> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const manifestsShaKey = `registry/winget/${GITHUB_REPO}/manifests-sha`;
   const UPDATE_INTERVAL = 600; // 10 minutes
 
@@ -461,7 +462,7 @@ export function parseVersion(path: string): PackageVersion | null {
 export async function buildPackageIndex(
   event?: H3Event,
 ): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
   const UPDATE_INTERVAL = 600; // 10 minutes
 
@@ -519,7 +520,7 @@ export async function buildPackageIndex(
  * Rebuild the package index from GitHub
  */
 async function rebuildPackageIndex(): Promise<Map<PackageIdentifier, Set<PackageVersion>>> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheKey = `registry/winget/${GITHUB_REPO}/index`;
 
   // Get all letter directory SHAs
@@ -633,7 +634,7 @@ export async function getVersionManifests(
  * Fetch manifest file content directly from GitHub raw URL with caching
  */
 export async function fetchManifestContent(manifestPath: string): Promise<string> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheKey = `registry/winget/${GITHUB_REPO}/files/${manifestPath}`;
 
   // Try to get from cache

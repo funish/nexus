@@ -1,10 +1,10 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
-import { useStorage } from "nitro/storage";
 import semver from "semver";
 
 import { calculateIntegrity } from "../../../utils/integrity";
 import { getContentType } from "../../../utils/mime";
+import { cacheStorage } from "../../../utils/storage";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 defineRouteMeta({
@@ -51,7 +51,7 @@ function getJsrCacheControl(version: string): string {
 
 // Check if package metadata is already cached
 async function isJsrPackageCached(packageName: string, version: string): Promise<boolean> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/jsr/${packageName}/${version}`;
 
   // Skip cache when version is incomplete semver
@@ -71,7 +71,7 @@ async function getOrCacheJsrFile(
   tarballUrl: string,
   filepath: string,
 ): Promise<Uint8Array> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheKey = `cdn/jsr/${packageName}/${version}/${filepath}`;
 
   // Try cache first
@@ -125,7 +125,7 @@ async function cacheJsrPackageInBackground(
   tarballUrl: string,
 ) {
   try {
-    const storage = useStorage("cache");
+    const storage = cacheStorage;
     const cacheBase = `cdn/jsr/${packageName}/${version}`;
 
     // Check if already cached
@@ -287,7 +287,7 @@ export default defineHandler(async (event) => {
   // Download tarball info
   const tarballUrl = versionInfo.dist.tarball;
 
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/jsr/${packageName}/${version}`;
 
   // Check if entire package is already cached

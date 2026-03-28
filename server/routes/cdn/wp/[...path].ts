@@ -1,8 +1,8 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
-import { useStorage } from "nitro/storage";
 
 import { getContentType } from "../../../utils/mime";
+import { cacheStorage } from "../../../utils/storage";
 
 defineRouteMeta({
   openAPI: {
@@ -51,7 +51,7 @@ async function fetchAndCacheFile(
   cacheKey: string,
   jsDelivrUrl?: string,
 ): Promise<Uint8Array> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
 
   // Check cache first
   const cached = await storage.getItemRaw(cacheKey);

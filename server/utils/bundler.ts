@@ -1,7 +1,8 @@
-import { useStorage } from "nitro/storage";
 import semver from "semver";
 
-interface BundleOptions {
+import { cacheStorage } from "./storage";
+
+export interface BundleOptions {
   packageName: string;
   version: string;
   entryPoint: string;
@@ -13,7 +14,7 @@ interface BundleOptions {
  */
 export async function bundleNpmPackage(options: BundleOptions): Promise<string> {
   const { packageName, version, entryPoint } = options;
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/npm/${packageName}/${version}`;
 
   // Check if package is cached

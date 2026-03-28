@@ -1,10 +1,10 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
-import { useStorage } from "nitro/storage";
 import semver from "semver";
 
 import { calculateIntegrity } from "../../../utils/integrity";
 import { getContentType } from "../../../utils/mime";
+import { cacheStorage } from "../../../utils/storage";
 import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 defineRouteMeta({
@@ -86,7 +86,7 @@ async function getGitHubTarballUrl(owner: string, repo: string, version: string)
 
 // Check if package metadata is already cached
 async function isGitHubCached(owner: string, repo: string, version: string): Promise<boolean> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
 
   // Skip cache when version is incomplete semver or branch
@@ -106,7 +106,7 @@ async function getOrCacheFile(
   version: string,
   filepath: string,
 ): Promise<Uint8Array> {
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheKey = `cdn/gh/${owner}/${repo}/${version}/${filepath}`;
 
   // Try cache first
@@ -159,7 +159,7 @@ async function getOrCacheFile(
 // Background task to cache all files from a GitHub repository version
 async function cacheGitHubPackageInBackground(owner: string, repo: string, version: string) {
   try {
-    const storage = useStorage("cache");
+    const storage = cacheStorage;
     const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
 
     // Check if already cached
@@ -318,7 +318,7 @@ export default defineHandler(async (event) => {
     }
   }
 
-  const storage = useStorage("cache");
+  const storage = cacheStorage;
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;
 
   // Check if entire package is already cached

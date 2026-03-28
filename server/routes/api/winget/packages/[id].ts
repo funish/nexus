@@ -1,6 +1,5 @@
 import { defineRouteMeta } from "nitro";
-import { defineCachedHandler } from "nitro/cache";
-import { getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 
 import type { PackageSingleResponse } from "../../../../utils/winget";
 import { buildPackageIndex } from "../../../../utils/winget";
@@ -50,39 +49,34 @@ defineRouteMeta({
  *
  * Response: PackageSingleResponse
  */
-export default defineCachedHandler(
-  async (event) => {
-    const packageId = getRouterParam(event, "id");
+export default defineHandler(async (event) => {
+  const packageId = getRouterParam(event, "id");
 
-    if (!packageId) {
-      throw new HTTPError({
-        status: 400,
-        statusText: "PackageIdentifier is required",
-      });
-    }
+  if (!packageId) {
+    throw new HTTPError({
+      status: 400,
+      statusText: "PackageIdentifier is required",
+    });
+  }
 
-    // Build package index
-    const packageIndex = await buildPackageIndex(event);
-    const versions = packageIndex.get(packageId);
+  // Build package index
+  const packageIndex = await buildPackageIndex(event);
+  const versions = packageIndex.get(packageId);
 
-    if (!versions) {
-      throw new HTTPError({
-        status: 404,
-        statusText: `Package '${packageId}' not found`,
-      });
-    }
+  if (!versions) {
+    throw new HTTPError({
+      status: 404,
+      statusText: `Package '${packageId}' not found`,
+    });
+  }
 
-    const response: PackageSingleResponse = {
-      Data: {
-        PackageIdentifier: packageId,
-      },
-    };
+  const response: PackageSingleResponse = {
+    Data: {
+      PackageIdentifier: packageId,
+    },
+  };
 
-    event.res.headers.set("Content-Type", "application/json");
+  event.res.headers.set("Content-Type", "application/json");
 
-    return response;
-  },
-  {
-    maxAge: 600,
-  },
-);
+  return response;
+});

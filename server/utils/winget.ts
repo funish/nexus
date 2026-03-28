@@ -1,4 +1,4 @@
-import type { H3Event } from "nitro/h3";
+import { type H3Event } from "nitro/h3";
 import { env } from "std-env";
 
 import { cacheStorage } from "./storage";
@@ -99,10 +99,7 @@ export interface VersionMultipleResponse {
  */
 export interface LocaleSchema {
   PackageLocale: string;
-  Publisher?: string;
-  PackageName?: string;
-  ShortDescription?: string;
-  Description?: string;
+  [key: string]: any;
 }
 
 /**
@@ -124,12 +121,8 @@ export interface LocaleMultipleResponse {
  * Installer Schema (WinGet 1.9.0)
  */
 export interface InstallerSchema {
-  InstallerIdentifier?: string;
-  InstallerType?: string;
-  InstallerUrl?: string;
-  Architecture?: string;
-  Scope?: string;
-  Language?: string;
+  InstallerIdentifier: string;
+  [key: string]: any;
 }
 
 /**
@@ -177,11 +170,19 @@ export interface VersionManifests {
 }
 
 /**
- * Error response
+ * Error response (WinGet REST Source format: array)
  */
 export interface WinGetError {
-  error: string;
-  message?: string;
+  ErrorCode: number;
+  ErrorMessage: string;
+}
+
+/**
+ * Create a WinGet-compatible HTTP error response
+ */
+export function createWinGetError(event: H3Event, status: number, message: string): WinGetError[] {
+  event.res.status = status;
+  return [{ ErrorCode: status, ErrorMessage: message }];
 }
 
 /**

@@ -1,9 +1,13 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam } from "nitro/h3";
 
 import type { LocaleSingleResponse, LocaleSchema } from "../../../../../../../../utils/winget";
-import { getVersionManifests, fetchManifestContent } from "../../../../../../../../utils/winget";
+import {
+  getVersionManifests,
+  fetchManifestContent,
+  createWinGetError,
+} from "../../../../../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -77,20 +81,18 @@ export default defineHandler(async (event) => {
   const locale = getRouterParam(event, "locale");
 
   if (!packageId || !version || !locale) {
-    throw new HTTPError({
-      status: 400,
-      statusText: "PackageIdentifier, PackageVersion, and PackageLocale are required",
-    });
+    return createWinGetError(
+      event,
+      400,
+      "PackageIdentifier, PackageVersion, and PackageLocale are required",
+    );
   }
 
   // Get all manifest files for this version
   const manifestFiles = await getVersionManifests(packageId, version);
 
   if (manifestFiles.length === 0) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Version ${version} of package '${packageId}' not found`,
-    });
+    return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
   // Find the specific locale manifest
@@ -98,35 +100,25 @@ export default defineHandler(async (event) => {
   const localeManifestPath = manifestFiles.find((path) => path.split("/").pop() === localeFilename);
 
   if (!localeManifestPath) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Locale '${locale}' not found for version ${version} of package '${packageId}'`,
-    });
+    return createWinGetError(
+      event,
+      404,
+      `Locale '${locale}' not found for version ${version} of package '${packageId}'`,
+    );
   }
 
   try {
     const content = await fetchManifestContent(localeManifestPath);
     const manifest = parseYAML(content) as Record<string, any>;
 
-    const localeData: LocaleSchema = {
-      PackageLocale: locale,
-      Publisher: manifest.Publisher,
-      PackageName: manifest.PackageName,
-      ShortDescription: manifest.ShortDescription,
-      Description: manifest.Description,
-    };
-
     const response: LocaleSingleResponse = {
-      Data: localeData,
+      Data: { PackageLocale: locale, ...manifest } as LocaleSchema,
     };
 
     event.res.headers.set("Content-Type", "application/json");
 
     return response;
   } catch (error) {
-    throw new HTTPError({
-      status: 500,
-      statusText: `Failed to parse locale manifest: ${String(error)}`,
-    });
+    return createWinGetError(event, 500, `Failed to parse locale manifest: ${String(error)}`);
   }
 });

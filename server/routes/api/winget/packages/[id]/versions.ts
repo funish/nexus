@@ -1,10 +1,11 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam } from "nitro/h3";
 
 import type { VersionMultipleResponse, VersionSchema } from "../../../../../utils/winget";
 import {
   buildPackageIndex,
+  createWinGetError,
   fetchManifestContent,
   getLetterDirectoryShas,
   getGitHubTreePaths,
@@ -62,10 +63,7 @@ export default defineHandler(async (event) => {
   const packageId = getRouterParam(event, "id");
 
   if (!packageId) {
-    throw new HTTPError({
-      status: 400,
-      statusText: "PackageIdentifier is required",
-    });
+    return createWinGetError(event, 400, "PackageIdentifier is required");
   }
 
   // Build package index
@@ -73,10 +71,7 @@ export default defineHandler(async (event) => {
   const versions = packageIndex.get(packageId);
 
   if (!versions) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Package '${packageId}' not found`,
-    });
+    return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
   // Get all manifest paths for all versions at once

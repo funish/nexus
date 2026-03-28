@@ -1,9 +1,13 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam } from "nitro/h3";
 
 import type { LocaleMultipleResponse, LocaleSchema } from "../../../../../../../utils/winget";
-import { getVersionManifests, fetchManifestContent } from "../../../../../../../utils/winget";
+import {
+  getVersionManifests,
+  fetchManifestContent,
+  createWinGetError,
+} from "../../../../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -74,20 +78,14 @@ export default defineHandler(async (event) => {
   const version = getRouterParam(event, "version");
 
   if (!packageId || !version) {
-    throw new HTTPError({
-      status: 400,
-      statusText: "PackageIdentifier and PackageVersion are required",
-    });
+    return createWinGetError(event, 400, "PackageIdentifier and PackageVersion are required");
   }
 
   // Get all manifest files for this version
   const manifestFiles = await getVersionManifests(packageId, version);
 
   if (manifestFiles.length === 0) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Version ${version} of package '${packageId}' not found`,
-    });
+    return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
   // Find all locale manifests
@@ -108,16 +106,10 @@ export default defineHandler(async (event) => {
 
         locales.push({
           PackageLocale: locale,
-          Publisher: manifest.Publisher,
-          PackageName: manifest.PackageName,
-          ShortDescription: manifest.ShortDescription,
-          Description: manifest.Description,
+          ...manifest,
         });
       } catch {
-        // If parsing fails, add minimal locale info
-        locales.push({
-          PackageLocale: locale,
-        });
+        locales.push({ PackageLocale: locale });
       }
     }
   }

@@ -1,12 +1,16 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam } from "nitro/h3";
 
 import type {
   InstallerSingleResponse,
   InstallerSchema,
 } from "../../../../../../../../utils/winget";
-import { getVersionManifests, fetchManifestContent } from "../../../../../../../../utils/winget";
+import {
+  getVersionManifests,
+  fetchManifestContent,
+  createWinGetError,
+} from "../../../../../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -81,20 +85,18 @@ export default defineHandler(async (event) => {
   const installerId = getRouterParam(event, "installer");
 
   if (!packageId || !version || !installerId) {
-    throw new HTTPError({
-      status: 400,
-      statusText: "PackageIdentifier, PackageVersion, and InstallerIdentifier are required",
-    });
+    return createWinGetError(
+      event,
+      400,
+      "PackageIdentifier, PackageVersion, and InstallerIdentifier are required",
+    );
   }
 
   // Get all manifest files for this version
   const manifestFiles = await getVersionManifests(packageId, version);
 
   if (manifestFiles.length === 0) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Version ${version} of package '${packageId}' not found`,
-    });
+    return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
   // Find installer manifest
@@ -104,10 +106,11 @@ export default defineHandler(async (event) => {
   );
 
   if (!installerManifestPath) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Installer manifest not found for version ${version} of package '${packageId}'`,
-    });
+    return createWinGetError(
+      event,
+      404,
+      `Installer manifest not found for version ${version} of package '${packageId}'`,
+    );
   }
 
   try {
@@ -116,10 +119,7 @@ export default defineHandler(async (event) => {
 
     // Find the specific installer
     if (!manifest.Installers || !Array.isArray(manifest.Installers)) {
-      throw new HTTPError({
-        status: 404,
-        statusText: `No installers found in manifest`,
-      });
+      return createWinGetError(event, 404, `No installers found in manifest`);
     }
 
     const installer = manifest.Installers.find(
@@ -127,35 +127,17 @@ export default defineHandler(async (event) => {
     );
 
     if (!installer) {
-      throw new HTTPError({
-        status: 404,
-        statusText: `Installer '${installerId}' not found`,
-      });
+      return createWinGetError(event, 404, `Installer '${installerId}' not found`);
     }
 
-    const installerData: InstallerSchema = {
-      InstallerIdentifier: installer.InstallerIdentifier,
-      InstallerType: installer.InstallerType,
-      InstallerUrl: installer.InstallerUrl,
-      Architecture: installer.Architecture,
-      Scope: installer.Scope,
-      Language: installer.Language,
-    };
-
     const response: InstallerSingleResponse = {
-      Data: installerData,
+      Data: installer as InstallerSchema,
     };
 
     event.res.headers.set("Content-Type", "application/json");
 
     return response;
   } catch (error) {
-    if (error instanceof HTTPError) {
-      throw error;
-    }
-    throw new HTTPError({
-      status: 500,
-      statusText: `Failed to parse installer manifest: ${String(error)}`,
-    });
+    return createWinGetError(event, 500, `Failed to parse installer manifest: ${String(error)}`);
   }
 });

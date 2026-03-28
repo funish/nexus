@@ -1,9 +1,13 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam } from "nitro/h3";
 
 import type { InstallerMultipleResponse, InstallerSchema } from "../../../../../../../utils/winget";
-import { getVersionManifests, fetchManifestContent } from "../../../../../../../utils/winget";
+import {
+  getVersionManifests,
+  fetchManifestContent,
+  createWinGetError,
+} from "../../../../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -74,20 +78,14 @@ export default defineHandler(async (event) => {
   const version = getRouterParam(event, "version");
 
   if (!packageId || !version) {
-    throw new HTTPError({
-      status: 400,
-      statusText: "PackageIdentifier and PackageVersion are required",
-    });
+    return createWinGetError(event, 400, "PackageIdentifier and PackageVersion are required");
   }
 
   // Get all manifest files for this version
   const manifestFiles = await getVersionManifests(packageId, version);
 
   if (manifestFiles.length === 0) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Version ${version} of package '${packageId}' not found`,
-    });
+    return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
   // Find installer manifest
@@ -97,10 +95,11 @@ export default defineHandler(async (event) => {
   );
 
   if (!installerManifestPath) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Installer manifest not found for version ${version} of package '${packageId}'`,
-    });
+    return createWinGetError(
+      event,
+      404,
+      `Installer manifest not found for version ${version} of package '${packageId}'`,
+    );
   }
 
   try {
@@ -112,14 +111,7 @@ export default defineHandler(async (event) => {
 
     if (manifest.Installers && Array.isArray(manifest.Installers)) {
       for (const installer of manifest.Installers) {
-        installers.push({
-          InstallerIdentifier: installer.InstallerIdentifier,
-          InstallerType: installer.InstallerType,
-          InstallerUrl: installer.InstallerUrl,
-          Architecture: installer.Architecture,
-          Scope: installer.Scope,
-          Language: installer.Language,
-        });
+        installers.push(installer as InstallerSchema);
       }
     }
 
@@ -131,9 +123,6 @@ export default defineHandler(async (event) => {
 
     return response;
   } catch (error) {
-    throw new HTTPError({
-      status: 500,
-      statusText: `Failed to parse installer manifest: ${String(error)}`,
-    });
+    return createWinGetError(event, 500, `Failed to parse installer manifest: ${String(error)}`);
   }
 });

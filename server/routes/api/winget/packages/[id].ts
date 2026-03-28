@@ -1,8 +1,8 @@
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
+import { defineHandler, getRouterParam } from "nitro/h3";
 
 import type { PackageSingleResponse } from "../../../../utils/winget";
-import { buildPackageIndex } from "../../../../utils/winget";
+import { buildPackageIndex, createWinGetError } from "../../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -53,10 +53,7 @@ export default defineHandler(async (event) => {
   const packageId = getRouterParam(event, "id");
 
   if (!packageId) {
-    throw new HTTPError({
-      status: 400,
-      statusText: "PackageIdentifier is required",
-    });
+    return createWinGetError(event, 400, "PackageIdentifier is required");
   }
 
   // Build package index
@@ -64,10 +61,7 @@ export default defineHandler(async (event) => {
   const versions = packageIndex.get(packageId);
 
   if (!versions) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `Package '${packageId}' not found`,
-    });
+    return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
   const response: PackageSingleResponse = {

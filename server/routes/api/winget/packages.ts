@@ -1,3 +1,4 @@
+import { semver } from "bun";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery } from "nitro/h3";
 
@@ -69,7 +70,7 @@ export default defineHandler(async (event) => {
   const packages: WinGetPackage[] = Array.from(packageIndex.entries())
     .map(([packageId, versions]) => ({
       PackageIdentifier: packageId,
-      Versions: Array.from(versions).sort().reverse(),
+      Versions: Array.from(versions).sort((a, b) => semver.order(b, a)),
     }))
     .sort((a, b) => a.PackageIdentifier.localeCompare(b.PackageIdentifier));
 

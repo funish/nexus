@@ -1,3 +1,4 @@
+import { semver } from "bun";
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, getRouterParam } from "nitro/h3";
@@ -95,7 +96,7 @@ export default defineHandler(async (event: H3Event) => {
   }
 
   // Build manifest for all versions (sorted descending)
-  const sortedVersions = Array.from(versions).sort().reverse();
+  const sortedVersions = Array.from(versions).sort((a, b) => semver.order(b, a));
   const manifestVersions: VersionManifest[] = [];
 
   await Promise.allSettled(

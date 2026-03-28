@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 
+import { semver } from "bun";
 import { unzipSync } from "fflate";
 import { type H3Event } from "nitro/h3";
 
@@ -602,7 +603,7 @@ export function searchPackages(
   // Build response, sort versions descending per package
   const results: ManifestSearchResponse[] = [];
   for (const [id, data] of packageMap.entries()) {
-    data.versions.sort((a, b) => b.PackageVersion.localeCompare(a.PackageVersion));
+    data.versions.sort((a, b) => semver.order(b.PackageVersion, a.PackageVersion));
     results.push({
       PackageIdentifier: id,
       PackageName: data.name,

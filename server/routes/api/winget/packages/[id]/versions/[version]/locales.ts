@@ -5,6 +5,7 @@ import { defineHandler, getRouterParam } from "nitro/h3";
 import type { LocaleMultipleResponse, LocaleSchema } from "../../../../../../../utils/winget";
 import {
   getVersionManifests,
+  getDefaultLocaleManifestPath,
   fetchManifestContent,
   createWinGetError,
 } from "../../../../../../../utils/winget";
@@ -91,27 +92,36 @@ export default defineHandler(async (event) => {
   // Find all locale manifests
   const locales: LocaleSchema[] = [];
 
-  for (const manifestPath of manifestFiles) {
-    const filename = manifestPath.split("/").pop()!;
+  // Read version manifest to get DefaultLocale
+  const versionManifestPath = manifestFiles.find(
+    (path) => path.split("/").pop() === `${packageId}.yaml`,
+  );
 
-    // Match locale files: {PackageId}.locale.{locale}.yaml
-    const localeMatch = filename.match(/\.locale\.([^.]+)\.yaml$/);
-
-    if (localeMatch && localeMatch[1]) {
-      const locale = localeMatch[1];
-
-      try {
-        const content = await fetchManifestContent(manifestPath);
-        const manifest = parseYAML(content) as Record<string, any>;
-
-        locales.push({
-          PackageLocale: locale,
-          ...manifest,
-        });
-      } catch {
-        locales.push({ PackageLocale: locale });
+  let defaultLocale = "en-US";
+  if (versionManifestPath) {
+    try {
+      const content = await fetchManifestContent(versionManifestPath);
+      const manifest = parseYAML(content) as Record<string, any>;
+      if (manifest.DefaultLocale) {
+        defaultLocale = manifest.DefaultLocale;
       }
+    } catch {
+      // keep fallback
     }
+  }
+
+  const localePath = getDefaultLocaleManifestPath(packageId, version, defaultLocale);
+
+  try {
+    const content = await fetchManifestContent(localePath);
+    const manifest = parseYAML(content) as Record<string, any>;
+
+    locales.push({
+      PackageLocale: defaultLocale,
+      ...manifest,
+    });
+  } catch {
+    locales.push({ PackageLocale: defaultLocale });
   }
 
   const response: LocaleMultipleResponse = {

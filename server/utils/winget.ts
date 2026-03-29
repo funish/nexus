@@ -402,11 +402,7 @@ export function getVersionManifests(
 
   const basePath = `manifests/${letter}/${publisher}/${name}/${version}`;
 
-  return [
-    `${basePath}/${packageId}.yaml`,
-    `${basePath}/${packageId}.installer.yaml`,
-    `${basePath}/${packageId}.locale.en-US.yaml`,
-  ];
+  return [`${basePath}/${packageId}.yaml`, `${basePath}/${packageId}.installer.yaml`];
 }
 
 /**

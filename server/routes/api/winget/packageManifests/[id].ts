@@ -8,6 +8,7 @@ import {
   buildPackageIndex,
   fetchManifestContent,
   getVersionManifests,
+  getDefaultLocaleManifestPath,
   createWinGetError,
 } from "../../../../utils/winget";
 
@@ -116,13 +117,23 @@ export default defineHandler(async (event: H3Event) => {
           versionEntry.DefaultLocale = parsed.DefaultLocale;
           versionEntry.Channel = parsed.Channel;
           versionEntry.Manifest = parsed;
+
+          // Fetch locale manifest using DefaultLocale from version manifest
+          if (parsed.DefaultLocale) {
+            try {
+              const localeContent = await fetchManifestContent(
+                getDefaultLocaleManifestPath(packageId, version, parsed.DefaultLocale),
+              );
+              const localeParsed = parseYAML(localeContent) as Record<string, any>;
+              if (!versionEntry.Locales) versionEntry.Locales = [];
+              versionEntry.Locales.push(localeParsed);
+            } catch {
+              // locale file may not exist
+            }
+          }
         } else if (filename.match(/\.installer\.yaml$/)) {
           // Installer manifest
           versionEntry.Installers = parsed.Installers;
-        } else if (filename.match(/\.locale\./)) {
-          // Locale manifest
-          if (!versionEntry.Locales) versionEntry.Locales = [];
-          versionEntry.Locales.push(parsed);
         }
       }
 

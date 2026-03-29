@@ -5,6 +5,7 @@ import { defineHandler, getRouterParam } from "nitro/h3";
 import type { LocaleSingleResponse, LocaleSchema } from "../../../../../../../../utils/winget";
 import {
   getVersionManifests,
+  getDefaultLocaleManifestPath,
   fetchManifestContent,
   createWinGetError,
 } from "../../../../../../../../utils/winget";
@@ -95,17 +96,8 @@ export default defineHandler(async (event) => {
     return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
-  // Find the specific locale manifest
-  const localeFilename = `${packageId}.locale.${locale}.yaml`;
-  const localeManifestPath = manifestFiles.find((path) => path.split("/").pop() === localeFilename);
-
-  if (!localeManifestPath) {
-    return createWinGetError(
-      event,
-      404,
-      `Locale '${locale}' not found for version ${version} of package '${packageId}'`,
-    );
-  }
+  // Construct locale manifest path directly
+  const localeManifestPath = getDefaultLocaleManifestPath(packageId, version, locale);
 
   try {
     const content = await fetchManifestContent(localeManifestPath);
@@ -119,6 +111,14 @@ export default defineHandler(async (event) => {
 
     return response;
   } catch (error) {
-    return createWinGetError(event, 500, `Failed to parse locale manifest: ${String(error)}`);
+    const message = String(error);
+    if (message.includes("404")) {
+      return createWinGetError(
+        event,
+        404,
+        `Locale '${locale}' not found for version ${version} of package '${packageId}'`,
+      );
+    }
+    return createWinGetError(event, 500, `Failed to parse locale manifest: ${message}`);
   }
 });

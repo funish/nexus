@@ -1,9 +1,8 @@
-import { semver } from "bun";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery } from "nitro/h3";
 
 import type { PackageMultipleResponse, WinGetPackage } from "../../../utils/winget";
-import { buildPackageIndex } from "../../../utils/winget";
+import { buildPackageIndex, compareVersion } from "../../../utils/winget";
 
 defineRouteMeta({
   openAPI: {
@@ -70,7 +69,7 @@ export default defineHandler(async (event) => {
   const packages: WinGetPackage[] = Array.from(packageIndex.entries())
     .map(([packageId, versions]) => ({
       PackageIdentifier: packageId,
-      Versions: Array.from(versions).sort((a, b) => semver.order(b, a)),
+      Versions: Array.from(versions).sort((a, b) => compareVersion(b, a)),
     }))
     .sort((a, b) => a.PackageIdentifier.localeCompare(b.PackageIdentifier));
 

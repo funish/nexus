@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite";
 
-import { semver } from "bun";
 import { unzipSync } from "fflate";
 import { type H3Event } from "nitro/h3";
 
@@ -599,7 +598,7 @@ export function searchPackages(
   // Build response, sort versions descending per package
   const results: ManifestSearchResponse[] = [];
   for (const [id, data] of packageMap.entries()) {
-    data.versions.sort((a, b) => semver.order(b.PackageVersion, a.PackageVersion));
+    data.versions.sort((a, b) => compareVersion(b.PackageVersion, a.PackageVersion));
     results.push({
       PackageIdentifier: id,
       PackageName: data.name,
@@ -666,4 +665,23 @@ export async function fetchManifestContent(manifestPath: string): Promise<string
   await cacheStorage.setItem(cacheKey, content);
 
   return content;
+}
+
+/**
+ * Compare two version strings, falling back to numeric comparison for non-semver versions.
+ */
+export function compareVersion(a: string, b: string): number {
+  try {
+    return Bun.semver.order(a, b);
+  } catch {
+    const pa = a.split(".").map(Number);
+    const pb = b.split(".").map(Number);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+      const x = pa[i] || 0;
+      const y = pb[i] || 0;
+      if (x !== y) return x - y;
+    }
+    return 0;
+  }
 }

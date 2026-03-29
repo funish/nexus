@@ -1,4 +1,3 @@
-import { semver } from "bun";
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
@@ -9,6 +8,7 @@ import {
   createWinGetError,
   fetchManifestContent,
   getVersionManifests,
+  compareVersion,
 } from "../../../../../utils/winget";
 
 defineRouteMeta({
@@ -74,7 +74,7 @@ export default defineHandler(async (event) => {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
-  const sortedVersions = Array.from(versions).sort((a, b) => semver.order(b, a));
+  const sortedVersions = Array.from(versions).sort((a, b) => compareVersion(b, a));
 
   // For each version, fetch the version manifest to get DefaultLocale and Channel
   const manifestPromises = sortedVersions.map(async (version) => {

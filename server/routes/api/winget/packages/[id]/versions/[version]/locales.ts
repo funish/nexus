@@ -128,7 +128,5 @@ export default defineHandler(async (event) => {
     Data: locales,
   };
 
-  event.res.headers.set("Content-Type", "application/json");
-
   return response;
 });

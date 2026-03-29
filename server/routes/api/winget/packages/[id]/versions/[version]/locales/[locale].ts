@@ -107,12 +107,10 @@ export default defineHandler(async (event) => {
       Data: { PackageLocale: locale, ...manifest } as LocaleSchema,
     };
 
-    event.res.headers.set("Content-Type", "application/json");
-
     return response;
   } catch (error) {
     const message = String(error);
-    if (message.includes("404")) {
+    if (message.includes("Not Found")) {
       return createWinGetError(
         event,
         404,

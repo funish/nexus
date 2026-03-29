@@ -97,8 +97,5 @@ export default defineHandler(async (event) => {
   if (endIndex < packages.length) {
     response.ContinuationToken = Buffer.from(endIndex.toString()).toString("base64");
   }
-
-  event.res.headers.set("Content-Type", "application/json");
-
   return response;
 });

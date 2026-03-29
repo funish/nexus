@@ -138,10 +138,14 @@ export default defineHandler(async (event) => {
 
   const db = await getIndexDb(event);
 
-  const results = searchPackages(db, {
+  // ContinuationToken from header (spec defines it as a header parameter)
+  const headerToken = event.req.headers.get("continuationtoken") || undefined;
+
+  const { results, hasMore } = searchPackages(db, {
     keyword: searchRequest.Query?.KeyWord,
     matchType: searchRequest.Query?.MatchType,
     maximumResults: searchRequest.MaximumResults,
+    continuationToken: headerToken,
     inclusions: searchRequest.Inclusions,
     filters: searchRequest.Filters,
   });
@@ -152,8 +156,14 @@ export default defineHandler(async (event) => {
     UnsupportedPackageMatchFields: ["Market", "HasInstallerType"],
   };
 
-  event.res.headers.set("Content-Type", "application/json");
-  event.res.headers.set("Cache-Control", "public, max-age=300"); // 5 minutes
+  if (hasMore) {
+    const nextOffset =
+      (headerToken ? parseInt(Buffer.from(headerToken, "base64").toString(), 10) : 0) +
+      results.length;
+    response.ContinuationToken = Buffer.from(nextOffset.toString()).toString("base64");
+  }
+
+  event.res.headers.set("Cache-Control", "public, max-age=300");
 
   return response;
 });

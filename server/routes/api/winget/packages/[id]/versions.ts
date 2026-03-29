@@ -139,8 +139,5 @@ export default defineHandler(async (event) => {
   const response: VersionMultipleResponse = {
     Data: versionData,
   };
-
-  event.res.headers.set("Content-Type", "application/json");
-
   return response;
 });

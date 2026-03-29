@@ -107,8 +107,5 @@ export default defineHandler(async (event) => {
   const response: VersionSingleResponse = {
     Data: versionData,
   };
-
-  event.res.headers.set("Content-Type", "application/json");
-
   return response;
 });

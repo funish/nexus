@@ -39,6 +39,13 @@ defineRouteMeta({
         required: false,
         schema: { type: "string" },
       },
+      {
+        in: "query",
+        name: "Market",
+        description: "Filter by market (two-letter country code)",
+        required: false,
+        schema: { type: "string" },
+      },
     ],
     responses: {
       200: {
@@ -57,7 +64,6 @@ interface VersionManifest {
   Channel?: string | null;
   Locales?: Record<string, any>[];
   Installers?: Record<string, any>[];
-  Manifest?: Record<string, any>;
 }
 
 /**
@@ -71,6 +77,7 @@ export default defineHandler(async (event: H3Event) => {
   const query = getQuery(event);
   const filterVersion = query.Version as string | undefined;
   const filterChannel = query.Channel as string | undefined;
+  const filterMarket = query.Market as string | undefined;
 
   if (!packageId) {
     return createWinGetError(event, 400, "PackageIdentifier is required");
@@ -116,7 +123,6 @@ export default defineHandler(async (event: H3Event) => {
           // Version manifest
           versionEntry.DefaultLocale = parsed.DefaultLocale;
           versionEntry.Channel = parsed.Channel;
-          versionEntry.Manifest = parsed;
 
           // Fetch locale manifest using DefaultLocale from version manifest
           if (parsed.DefaultLocale) {
@@ -140,6 +146,20 @@ export default defineHandler(async (event: H3Event) => {
       // Apply channel filter if provided
       if (filterChannel && versionEntry.Channel !== filterChannel) return;
 
+      // Apply market filter if provided
+      if (filterMarket && versionEntry.Installers) {
+        const hasMatchingInstaller = versionEntry.Installers.some((installer: any) => {
+          const markets = installer.Markets;
+          if (!markets) return true; // No market restriction = available everywhere
+          if (markets.AllowedMarkets?.includes(filterMarket)) return true;
+          if (markets.ExcludedMarkets?.includes(filterMarket)) return false;
+          // If only AllowedMarkets is set and market not in it, exclude
+          if (markets.AllowedMarkets) return false;
+          return true;
+        });
+        if (!hasMatchingInstaller) return;
+      }
+
       manifestVersions.push(versionEntry);
     }),
   );
@@ -149,5 +169,7 @@ export default defineHandler(async (event: H3Event) => {
       PackageIdentifier: packageId,
       Versions: manifestVersions,
     },
+    UnsupportedQueryParameters: ["FetchAllManifests"],
+    RequiredQueryParameters: [],
   };
 });

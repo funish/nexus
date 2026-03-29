@@ -76,7 +76,5 @@ export default defineHandler(async (event) => {
     },
   };
 
-  event.res.headers.set("Content-Type", "application/json");
-
   return response;
 });

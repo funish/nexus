@@ -30,6 +30,7 @@
     "@types/node": "25.5.0",
     "@types/semver": "7.7.1",
     "confbox": "0.2.4",
+    "fastest-levenshtein": "1.0.16",
     "fflate": "0.8.2",
     "nitro": "3.0.1-alpha.2",
     "pkg-types": "2.3.0",

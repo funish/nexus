@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 
+import { distance } from "fastest-levenshtein";
 import { unzipSync } from "fflate";
 import { type H3Event } from "nitro/h3";
 
@@ -127,35 +128,6 @@ export interface InstallerMultipleResponse {
 }
 
 /**
- * @deprecated Use VersionSchema instead
- * Kept for backward compatibility
- */
-export interface WinGetVersion {
-  PackageVersion: PackageVersion;
-  DefaultLocale?: string;
-  Locales?: string[];
-  Installers?: string[];
-}
-
-/**
- * Manifest file content
- */
-export interface ManifestContent {
-  [key: string]: any;
-}
-
-/**
- * Parsed manifest structure for a version
- */
-export interface VersionManifests {
-  Version: PackageVersion;
-  DefaultLocale?: string;
-  Manifest?: ManifestContent;
-  LocaleManifests?: Record<string, ManifestContent>;
-  InstallerManifest?: ManifestContent;
-}
-
-/**
  * Error response (WinGet REST Source format: array)
  */
 export interface WinGetError {
@@ -247,6 +219,8 @@ export interface ManifestSearchResponse {
   PackageName: string;
   Publisher: string;
   Versions: ManifestSearchVersionResponse[];
+  /** @internal fuzzy search score, removed before response */
+  _fuzzyScore?: number;
 }
 
 /**
@@ -254,6 +228,7 @@ export interface ManifestSearchResponse {
  */
 export interface ManifestSearchResult {
   Data: ManifestSearchResponse[];
+  ContinuationToken?: string;
   RequiredPackageMatchFields?: PackageMatchField[];
   UnsupportedPackageMatchFields?: PackageMatchField[];
 }
@@ -489,11 +464,23 @@ export function searchPackages(
     keyword?: string;
     matchType?: MatchType;
     maximumResults?: number;
+    continuationToken?: string;
     inclusions?: SearchRequestPackageMatchFilter[];
     filters?: SearchRequestPackageMatchFilter[];
   },
-): ManifestSearchResponse[] {
-  const { keyword, matchType, maximumResults, inclusions, filters } = options;
+): { results: ManifestSearchResponse[]; hasMore: boolean } {
+  const { keyword, matchType, maximumResults, continuationToken, inclusions, filters } = options;
+  const isFuzzy = matchType === "Fuzzy" || matchType === "FuzzySubstring";
+
+  // Parse continuationToken as base64 encoded offset
+  let offset = 0;
+  if (continuationToken) {
+    try {
+      offset = parseInt(Buffer.from(continuationToken, "base64").toString(), 10);
+    } catch {
+      offset = 0;
+    }
+  }
 
   // Build WHERE clauses
   const conditions: string[] = [];
@@ -501,11 +488,27 @@ export function searchPackages(
 
   // Main keyword search across ids, names, monikers
   if (keyword) {
-    const pattern = toSqlPattern(keyword, matchType || "CaseInsensitive");
-    conditions.push(
-      `(i.id LIKE ?1 COLLATE NOCASE OR n.name LIKE ?1 COLLATE NOCASE OR mk.moniker LIKE ?1 COLLATE NOCASE)`,
-    );
-    params.push(pattern);
+    if (isFuzzy) {
+      // Split keyword into words and use first 3 chars of each as trigram pre-filter
+      // This is lenient enough to handle typos (e.g. "visul" → "%vis%" matches "visual")
+      const words = keyword.toLowerCase().split(/\s+/).filter(Boolean);
+      const trigramParts: string[] = [];
+      for (const w of words) {
+        const prefix = w.slice(0, Math.min(3, w.length));
+        const idx = params.length + 1;
+        trigramParts.push(
+          `(i.id LIKE ?${idx} COLLATE NOCASE OR n.name LIKE ?${idx} COLLATE NOCASE OR mk.moniker LIKE ?${idx} COLLATE NOCASE)`,
+        );
+        params.push(`%${prefix}%`);
+      }
+      conditions.push(`(${trigramParts.join(" OR ")})`);
+    } else {
+      const pattern = toSqlPattern(keyword, matchType || "CaseInsensitive");
+      conditions.push(
+        `(i.id LIKE ?1 COLLATE NOCASE OR n.name LIKE ?1 COLLATE NOCASE OR mk.moniker LIKE ?1 COLLATE NOCASE)`,
+      );
+      params.push(pattern);
+    }
   }
 
   // Inclusions (AND semantics — all must match)
@@ -514,11 +517,33 @@ export function searchPackages(
       if (!inc.RequestMatch?.KeyWord || !inc.PackageMatchField) continue;
 
       const column = getFieldTable(inc.PackageMatchField);
-      const pattern = toSqlPattern(
-        inc.RequestMatch.KeyWord,
-        inc.RequestMatch.MatchType || "CaseInsensitive",
-      );
+      const incMatchType = inc.RequestMatch.MatchType;
+      const isIncFuzzy = incMatchType === "Fuzzy" || incMatchType === "FuzzySubstring";
       const paramIdx = params.length + 1;
+
+      if (isIncFuzzy) {
+        // Trigram pre-filter for fuzzy inclusions
+        const words = inc.RequestMatch.KeyWord.toLowerCase().split(/\s+/).filter(Boolean);
+        const trigramParts: string[] = [];
+        for (const w of words) {
+          const prefix = w.slice(0, Math.min(3, w.length));
+          if (column) {
+            const idx = params.length + 1;
+            trigramParts.push(`${column} LIKE ?${idx} COLLATE NOCASE`);
+          } else {
+            conditions.push(
+              buildSubqueryCondition(inc.PackageMatchField, params.length + 1, false),
+            );
+          }
+          params.push(`%${prefix}%`);
+        }
+        if (trigramParts.length > 0) {
+          conditions.push(`(${trigramParts.join(" OR ")})`);
+        }
+        continue;
+      }
+
+      const pattern = toSqlPattern(inc.RequestMatch.KeyWord, incMatchType || "CaseInsensitive");
 
       if (!column) {
         conditions.push(buildSubqueryCondition(inc.PackageMatchField, paramIdx, false));
@@ -551,7 +576,10 @@ export function searchPackages(
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const limitClause = maximumResults ? `LIMIT ${maximumResults}` : "";
+  // Fetch more for fuzzy scoring (SQL pre-filter is broader than final result)
+  const fetchCount =
+    isFuzzy && maximumResults ? Math.max(maximumResults * 10, 500) : maximumResults || 500;
+  const limitClause = `LIMIT ${fetchCount} OFFSET ${offset}`;
 
   const sql = `
     SELECT DISTINCT i.id, n.name, v.version, ch.channel, np.norm_publisher
@@ -583,10 +611,12 @@ export function searchPackages(
   for (const row of rows) {
     let entry = packageMap.get(row.id);
     if (!entry) {
-      entry = { name: row.name, publisher: row.norm_publisher || "", versions: [] };
+      // Fallback publisher to first segment of PackageIdentifier when norm_publisher is empty
+      const publisher = row.norm_publisher || row.id.split(".")[0] || "";
+      entry = { name: row.name, publisher, versions: [] };
       packageMap.set(row.id, entry);
     }
-    // Prefer non-empty publisher across versions
+    // Prefer non-empty norm_publisher across versions
     if (row.norm_publisher && !entry.publisher) {
       entry.publisher = row.norm_publisher;
     }
@@ -608,7 +638,25 @@ export function searchPackages(
     });
   }
 
-  return results;
+  // For fuzzy matching, score and re-rank by Levenshtein distance
+  if (isFuzzy && keyword) {
+    const kw = keyword.toLowerCase();
+    for (const result of results) {
+      const idDist = distance(result.PackageIdentifier.toLowerCase(), kw);
+      const nameDist = distance(result.PackageName.toLowerCase(), kw);
+      result._fuzzyScore = Math.min(idDist, nameDist);
+    }
+    results.sort((a, b) => (a._fuzzyScore ?? Infinity) - (b._fuzzyScore ?? Infinity));
+  }
+
+  // Apply maximumResults
+  const trimmed = maximumResults ? results.slice(0, maximumResults) : results;
+  for (const r of trimmed) {
+    delete r._fuzzyScore;
+  }
+  const hasMore = results.length > trimmed.length;
+
+  return { results: trimmed, hasMore };
 }
 
 /**

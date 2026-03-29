@@ -119,8 +119,6 @@ export default defineHandler(async (event) => {
       Data: installers,
     };
 
-    event.res.headers.set("Content-Type", "application/json");
-
     return response;
   } catch (error) {
     return createWinGetError(event, 500, `Failed to parse installer manifest: ${String(error)}`);

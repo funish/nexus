@@ -52,7 +52,7 @@ export default defineHandler(() => {
       UnsupportedPackageMatchFields: ["Market", "HasInstallerType"],
       UnsupportedQueryParameters: ["FetchAllManifests"],
       RequiredQueryParameters: [],
-      Authentication: null,
+      Authentication: { AuthenticationType: "none" },
     },
   };
 });

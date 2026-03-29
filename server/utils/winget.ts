@@ -393,7 +393,8 @@ export function getVersionManifests(
   const parts = packageId.split(".");
   if (parts.length < 2) return [];
 
-  const [publisher, name] = parts;
+  const publisher = parts[0];
+  const name = parts.slice(1).join("/");
   if (!publisher || !name) return [];
 
   const letter = publisher[0]?.toLowerCase();
@@ -416,7 +417,7 @@ export function getDefaultLocaleManifestPath(
   if (parts.length < 2) return "";
 
   const publisher = parts[0];
-  const name = parts[1];
+  const name = parts.slice(1).join("/");
   if (!publisher || !name) return "";
 
   const letter = publisher[0]?.toLowerCase();

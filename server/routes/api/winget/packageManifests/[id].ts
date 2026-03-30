@@ -3,24 +3,34 @@ import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, getRouterParam } from "nitro/h3";
 import type { H3Event } from "nitro/h3";
 
-import {
-  buildPackageIndex,
-  fetchManifestContent,
-  getVersionManifests,
-  getDefaultLocaleManifestPath,
-  compareVersion,
-  createWinGetError,
-} from "../../../../utils/winget";
+import { getIndexDb } from "../../../../utils/winget/db";
+import { getPackageVersions } from "../../../../utils/winget/index";
+import { getVersionManifests, fetchManifestContent } from "../../../../utils/winget/manifest";
+import type { VersionManifest } from "../../../../utils/winget/types";
+import { createWinGetError, compareVersion } from "../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {
     tags: ["Package Manifests", "Get"],
-    summary: "Get package manifest",
-    description: "Retrieve a full package manifest with all versions, locales, and installers",
+    summary: "This returns a package manifest",
     parameters: [
       {
+        in: "header",
+        name: "Version",
+        description: "API version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
         in: "path",
-        name: "id",
+        name: "PackageIdentifier",
         description: "Package identifier",
         required: true,
         schema: { type: "string" },
@@ -37,40 +47,80 @@ defineRouteMeta({
         name: "Channel",
         description: "Filter by channel",
         required: false,
-        schema: { type: "string" },
+        schema: { type: "string", nullable: true },
       },
       {
         in: "query",
         name: "Market",
         description: "Filter by market (two-letter country code)",
         required: false,
-        schema: { type: "string" },
+        schema: { type: "string", nullable: true },
       },
     ],
     responses: {
       200: {
         description: "Package manifest",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                Data: {
+                  type: "object",
+                  nullable: true,
+                  properties: {
+                    PackageIdentifier: { type: "string" },
+                    Versions: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          PackageVersion: { type: "string" },
+                          DefaultLocale: { type: "string" },
+                          Channel: { type: "string" },
+                          Locales: { type: "array", items: { type: "object" } },
+                          Installers: { type: "array", items: { type: "object" } },
+                        },
+                        required: ["PackageVersion"],
+                      },
+                    },
+                  },
+                  required: ["PackageIdentifier"],
+                },
+                UnsupportedQueryParameters: { type: "array", items: { type: "string" } },
+                RequiredQueryParameters: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
       },
-      404: {
-        description: "Package not found",
+      404: { description: "Not Found" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
+                },
+                required: ["ErrorCode", "ErrorMessage"],
+              },
+            },
+          },
+        },
       },
     },
   },
 });
 
-interface VersionManifest {
-  PackageVersion: string;
-  DefaultLocale?: string;
-  Channel?: string | null;
-  Locales?: Record<string, any>[];
-  Installers?: Record<string, any>[];
-}
-
 /**
  * GET /packageManifests/{PackageIdentifier}
  *
  * WinGet.RestSource API - Get package manifest
- * Supports query parameters: Version, Channel, Market
  */
 export default defineHandler(async (event: H3Event) => {
   const packageId = getRouterParam(event, "id");
@@ -83,14 +133,13 @@ export default defineHandler(async (event: H3Event) => {
     return createWinGetError(event, 400, "PackageIdentifier is required");
   }
 
-  const packageIndex = await buildPackageIndex(event);
-  let versions = packageIndex.get(packageId);
+  const db = await getIndexDb(event);
+  let versions = await getPackageVersions(db, packageId);
 
-  if (!versions || versions.size === 0) {
+  if (versions.size === 0) {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
-  // Apply version filter if provided
   if (filterVersion) {
     if (versions.has(filterVersion)) {
       versions = new Set([filterVersion]);
@@ -103,57 +152,66 @@ export default defineHandler(async (event: H3Event) => {
     }
   }
 
-  // Build manifest for all versions (sorted descending)
   const sortedVersions = Array.from(versions).sort((a, b) => compareVersion(b, a));
   const manifestVersions: VersionManifest[] = [];
 
   await Promise.allSettled(
     sortedVersions.map(async (version) => {
-      const manifestFiles = getVersionManifests(packageId, version);
+      const manifestFiles = await getVersionManifests(packageId, version);
       if (manifestFiles.length === 0) return;
 
       const versionEntry: VersionManifest = { PackageVersion: version };
 
       for (const manifestPath of manifestFiles) {
         const filename = manifestPath.split("/").pop()!;
-        const content = await fetchManifestContent(manifestPath);
-        const parsed = parseYAML(content) as Record<string, any>;
 
-        if (filename === `${packageId}.yaml`) {
-          // Version manifest
-          versionEntry.DefaultLocale = parsed.DefaultLocale;
-          versionEntry.Channel = parsed.Channel;
+        try {
+          const content = await fetchManifestContent(manifestPath);
+          const manifest = parseYAML(content) as Record<string, any>;
 
-          // Fetch locale manifest using DefaultLocale from version manifest
-          if (parsed.DefaultLocale) {
-            try {
-              const localeContent = await fetchManifestContent(
-                getDefaultLocaleManifestPath(packageId, version, parsed.DefaultLocale),
-              );
-              const localeParsed = parseYAML(localeContent) as Record<string, any>;
+          if (filename === `${packageId}.yaml`) {
+            versionEntry.DefaultLocale = manifest.DefaultLocale;
+            versionEntry.Channel = manifest.Channel;
+            // Include default locale data in Locales array only if main manifest has locale fields
+            // and no matching .locale.{DefaultLocale}.yaml file exists
+            const hasLocaleData = Boolean(
+              manifest.PackageLocale || manifest.Publisher || manifest.PackageName,
+            );
+            const dl = manifest.DefaultLocale || manifest.PackageLocale;
+            const hasDefaultLocaleFile = dl
+              ? manifestFiles.some((p) => p.includes(`.locale.${dl}.yaml`))
+              : false;
+            if (hasLocaleData && !hasDefaultLocaleFile) {
               if (!versionEntry.Locales) versionEntry.Locales = [];
-              versionEntry.Locales.push(localeParsed);
-            } catch {
-              // locale file may not exist
+              versionEntry.Locales.unshift({
+                PackageLocale: dl || manifest.PackageLocale,
+                ...manifest,
+              } as Record<string, any>);
             }
+          } else if (filename.match(/\.installer\.yaml$/)) {
+            if (manifest.Installers && Array.isArray(manifest.Installers)) {
+              versionEntry.Installers = manifest.Installers.map((inst: Record<string, any>) => ({
+                ...manifest,
+                ...inst,
+              }));
+            }
+          } else if (filename.match(/\.locale\.([^.]+)\.yaml$/)) {
+            if (!versionEntry.Locales) versionEntry.Locales = [];
+            versionEntry.Locales.push(manifest);
           }
-        } else if (filename.match(/\.installer\.yaml$/)) {
-          // Installer manifest
-          versionEntry.Installers = parsed.Installers;
+        } catch {
+          // Skip individual file errors
         }
       }
 
-      // Apply channel filter if provided
       if (filterChannel && versionEntry.Channel !== filterChannel) return;
 
-      // Apply market filter if provided
       if (filterMarket && versionEntry.Installers) {
         const hasMatchingInstaller = versionEntry.Installers.some((installer: any) => {
           const markets = installer.Markets;
-          if (!markets) return true; // No market restriction = available everywhere
+          if (!markets) return true;
           if (markets.AllowedMarkets?.includes(filterMarket)) return true;
           if (markets.ExcludedMarkets?.includes(filterMarket)) return false;
-          // If only AllowedMarkets is set and market not in it, exclude
           if (markets.AllowedMarkets) return false;
           return true;
         });

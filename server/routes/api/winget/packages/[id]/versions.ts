@@ -1,33 +1,50 @@
 import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
-import { defineHandler, getRouterParam } from "nitro/h3";
+import { defineHandler, getQuery, getRouterParam } from "nitro/h3";
 
-import type { VersionMultipleResponse, VersionSchema } from "../../../../../utils/winget";
-import {
-  buildPackageIndex,
-  createWinGetError,
-  fetchManifestContent,
-  getVersionManifests,
-  compareVersion,
-} from "../../../../../utils/winget";
+import { getIndexDb } from "../../../../../utils/winget/db";
+import { getPackageVersions } from "../../../../../utils/winget/index";
+import { constructManifestPath, fetchManifestContent } from "../../../../../utils/winget/manifest";
+import type { VersionMultipleResponse, VersionSchema } from "../../../../../utils/winget/types";
+import { createWinGetError, compareVersion } from "../../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {
     tags: ["Versions", "Get"],
-    summary: "Get all versions of a WinGet package",
-    description: "Retrieve all available versions for a specific WinGet package",
+    summary: "Get Version Metadata",
     parameters: [
       {
+        in: "header",
+        name: "Version",
+        description: "API version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
         in: "path",
-        name: "id",
+        name: "PackageIdentifier",
         description: "Package identifier",
         required: true,
+        schema: { type: "string" },
+      },
+      {
+        in: "query",
+        name: "ContinuationToken",
+        description: "Pagination token",
+        required: false,
         schema: { type: "string" },
       },
     ],
     responses: {
       200: {
-        description: "Successful response",
+        description: "Version list",
         content: {
           "application/json": {
             schema: {
@@ -52,13 +69,36 @@ defineRouteMeta({
           },
         },
       },
-      404: {
-        description: "Package not found",
+      404: { description: "Not Found" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
+                },
+                required: ["ErrorCode", "ErrorMessage"],
+              },
+            },
+          },
+        },
       },
     },
   },
 });
 
+const PAGE_SIZE = 25;
+
+/**
+ * GET /packages/{PackageIdentifier}/versions
+ *
+ * WinGet.RestSource API - Get all versions
+ */
 export default defineHandler(async (event) => {
   const packageId = getRouterParam(event, "id");
 
@@ -66,78 +106,54 @@ export default defineHandler(async (event) => {
     return createWinGetError(event, 400, "PackageIdentifier is required");
   }
 
-  // Build package index
-  const packageIndex = await buildPackageIndex(event);
-  const versions = packageIndex.get(packageId);
+  const query = getQuery(event);
+  const continuationToken = query.ContinuationToken as string | undefined;
 
-  if (!versions) {
+  const db = await getIndexDb(event);
+  const versions = await getPackageVersions(db, packageId);
+
+  if (versions.size === 0) {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
   const sortedVersions = Array.from(versions).sort((a, b) => compareVersion(b, a));
 
-  // For each version, fetch the version manifest to get DefaultLocale and Channel
-  const manifestPromises = sortedVersions.map(async (version) => {
-    const manifestFiles = getVersionManifests(packageId, version);
-    const versionManifestPath = manifestFiles[0]; // {id}.yaml
-
-    if (!versionManifestPath) {
-      return {
-        version,
-        defaultLocale: "en-US",
-        channel: undefined,
-      };
-    }
-
+  // Fetch DefaultLocale from the latest version's manifest (all versions usually share the same DefaultLocale)
+  let defaultLocale = "en-US";
+  if (sortedVersions.length > 0) {
     try {
-      const content = await fetchManifestContent(versionManifestPath);
-      const manifest = parseYAML(content) as Record<string, any>;
-      return {
-        version,
-        defaultLocale: (manifest.DefaultLocale as string) || "en-US",
-        channel: manifest.Channel as string | undefined,
-      };
+      const mainPath = constructManifestPath(packageId, sortedVersions[0]!, "main");
+      const content = await fetchManifestContent(mainPath);
+      defaultLocale = (parseYAML(content) as Record<string, any>).DefaultLocale || "en-US";
     } catch {
-      return {
-        version,
-        defaultLocale: "en-US",
-        channel: undefined,
-      };
+      // Keep fallback
     }
-  });
+  }
 
-  // Wait for all manifest fetches to complete
-  const manifestResults = await Promise.allSettled(manifestPromises);
-
-  // Build version data array
-  const versionData: VersionSchema[] = manifestResults.map((result, index) => {
-    const version = sortedVersions[index];
-
-    if (!version) {
-      return {
-        PackageVersion: "unknown",
-        DefaultLocale: "en-US",
-      };
+  let startIndex = 0;
+  if (continuationToken) {
+    try {
+      startIndex = parseInt(Buffer.from(continuationToken, "base64").toString(), 10);
+    } catch {
+      startIndex = 0;
     }
+  }
 
-    const data =
-      result.status === "fulfilled"
-        ? result.value
-        : {
-            version,
-            defaultLocale: "en-US",
-            channel: undefined,
-          };
+  const endIndex = startIndex + PAGE_SIZE;
+  const paginatedVersions = sortedVersions.slice(startIndex, endIndex);
 
-    return {
-      PackageVersion: data.version,
-      DefaultLocale: data.defaultLocale,
-      ...(data.channel && { Channel: data.channel }),
-    };
-  });
+  const versionData: VersionSchema[] = paginatedVersions.map((version) => ({
+    PackageVersion: version,
+    DefaultLocale: defaultLocale,
+  }));
 
   const response: VersionMultipleResponse = {
     Data: versionData,
   };
+
+  if (endIndex < sortedVersions.length) {
+    response.ContinuationToken = Buffer.from(endIndex.toString()).toString("base64");
+  }
+
   return response;
 });

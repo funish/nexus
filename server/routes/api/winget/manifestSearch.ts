@@ -1,19 +1,25 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, readBody } from "nitro/h3";
 
-import type { ManifestSearchRequest, ManifestSearchResult, MatchType } from "../../../utils/winget";
-import { getIndexDb, searchPackages } from "../../../utils/winget";
+import { getIndexDb } from "../../../utils/winget/db";
+import { searchPackages } from "../../../utils/winget/search";
+import type {
+  ManifestSearchRequest,
+  ManifestSearchResult,
+  MatchType,
+} from "../../../utils/winget/types";
 
 defineRouteMeta({
   openAPI: {
     tags: ["Package Manifests"],
-    summary: "Search WinGet packages",
-    description: "Search for WinGet packages by keyword with various match types",
+    summary: "This retrieves package manifests for a given search request.",
+    description:
+      "Supports both GET (query parameters: query, matchType, maximumResults) and POST (JSON request body with Inclusions/Filters).",
     parameters: [
       {
         in: "query",
         name: "query",
-        description: "Search keyword",
+        description: "Search keyword (GET only)",
         required: false,
         schema: { type: "string" },
       },
@@ -21,7 +27,7 @@ defineRouteMeta({
         in: "query",
         name: "matchType",
         description:
-          "Match type (Exact, CaseInsensitive, StartsWith, Substring, Wildcard, Fuzzy, FuzzySubstring)",
+          "Match type: Exact, CaseInsensitive, StartsWith, Substring, Wildcard, Fuzzy, FuzzySubstring (GET only)",
         required: false,
         schema: {
           type: "string",
@@ -39,9 +45,30 @@ defineRouteMeta({
       {
         in: "query",
         name: "maximumResults",
-        description: "Maximum number of results to return",
+        description: "Maximum number of results to return (GET only)",
         required: false,
         schema: { type: "number" },
+      },
+      {
+        in: "header",
+        name: "Version",
+        description: "API version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "ContinuationToken",
+        description: "Pagination token",
+        required: false,
+        schema: { type: "string" },
       },
     ],
     responses: {
@@ -67,20 +94,44 @@ defineRouteMeta({
                           properties: {
                             PackageVersion: { type: "string" },
                             Channel: { type: "string" },
+                            PackageFamilyNames: { type: "array", items: { type: "string" } },
+                            ProductCodes: { type: "array", items: { type: "string" } },
+                            AppsAndFeaturesEntryVersions: {
+                              type: "array",
+                              items: { type: "string" },
+                            },
+                            UpgradeCodes: { type: "array", items: { type: "string" } },
                           },
+                          required: ["PackageVersion"],
                         },
                       },
                     },
+                    required: ["PackageIdentifier", "PackageName", "Publisher"],
                   },
                 },
-                RequiredPackageMatchFields: {
-                  type: "array",
-                  items: { type: "string" },
+                ContinuationToken: { type: "string" },
+                RequiredPackageMatchFields: { type: "array", items: { type: "string" } },
+                UnsupportedPackageMatchFields: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
+      },
+      204: { description: "No results were found." },
+      400: { description: "Bad Request" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
                 },
-                UnsupportedPackageMatchFields: {
-                  type: "array",
-                  items: { type: "string" },
-                },
+                required: ["ErrorCode", "ErrorMessage"],
               },
             },
           },
@@ -91,22 +142,13 @@ defineRouteMeta({
 });
 
 /**
- * GET/POST /api/winget/manifestSearch
+ * POST /manifestSearch
  *
  * WinGet.RestSource API - Search packages
  *
  * Supports both GET and POST methods for compatibility:
- * - GET: Query parameters (query, matchType, maximumResults)
  * - POST: JSON request body (official format with Inclusions/Filters)
- *
- * Request body (POST):
- * {
- *   "MaximumResults": 10,
- *   "FetchAllManifests": false,
- *   "Query": { "KeyWord": "Adobe", "MatchType": "CaseInsensitive" },
- *   "Inclusions": [{ "PackageMatchField": "PackageName", "RequestMatch": { "KeyWord": "Microsoft", "MatchType": "CaseInsensitive" } }],
- *   "Filters": [{ "PackageMatchField": "Tag", "RequestMatch": { "KeyWord": "preview", "MatchType": "CaseInsensitive" } }]
- * }
+ * - GET: Query parameters (compatibility mode)
  */
 export default defineHandler(async (event) => {
   let searchRequest: ManifestSearchRequest;
@@ -164,6 +206,11 @@ export default defineHandler(async (event) => {
   }
 
   event.res.headers.set("Cache-Control", "public, max-age=300");
+
+  if (results.length === 0) {
+    event.res.status = 204;
+    return null;
+  }
 
   return response;
 });

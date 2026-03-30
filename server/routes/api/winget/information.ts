@@ -4,8 +4,16 @@ import { defineHandler } from "nitro/h3";
 defineRouteMeta({
   openAPI: {
     tags: ["Server", "Get"],
-    summary: "Get server information",
-    description: "Returns server information including supported API versions and capabilities",
+    summary: "Get Server Information.",
+    parameters: [
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+    ],
     responses: {
       200: {
         description: "Server information",
@@ -14,21 +22,61 @@ defineRouteMeta({
             schema: {
               type: "object",
               properties: {
-                SourceIdentifier: { type: "string" },
-                ServerSupportedVersions: {
-                  type: "array",
-                  items: { type: "string" },
-                },
-                RequiredPackageMatchFields: {
-                  type: "array",
-                  items: { type: "string" },
-                },
-                UnsupportedPackageMatchFields: {
-                  type: "array",
-                  items: { type: "string" },
+                Data: {
+                  type: "object",
+                  properties: {
+                    SourceIdentifier: { type: "string" },
+                    ServerSupportedVersions: { type: "array", items: { type: "string" } },
+                    SourceAgreements: {
+                      type: "object",
+                      properties: {
+                        AgreementsIdentifier: { type: "string" },
+                        Agreements: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              AgreementLabel: { type: "string" },
+                              Agreement: { type: "string" },
+                              AgreementUrl: { type: "string" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                    UnsupportedPackageMatchFields: { type: "array", items: { type: "string" } },
+                    RequiredPackageMatchFields: { type: "array", items: { type: "string" } },
+                    UnsupportedQueryParameters: { type: "array", items: { type: "string" } },
+                    RequiredQueryParameters: { type: "array", items: { type: "string" } },
+                    Authentication: {
+                      type: "object",
+                      properties: {
+                        AuthenticationType: { type: "string" },
+                      },
+                    },
+                  },
+                  required: ["SourceIdentifier", "ServerSupportedVersions"],
                 },
               },
-              required: ["SourceIdentifier", "ServerSupportedVersions"],
+            },
+          },
+        },
+      },
+      404: { description: "Not Found" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
+                },
+                required: ["ErrorCode", "ErrorMessage"],
+              },
             },
           },
         },
@@ -41,7 +89,6 @@ defineRouteMeta({
  * GET /information
  *
  * WinGet.RestSource API - Server information
- * This endpoint is required for winget client source discovery.
  */
 export default defineHandler(() => {
   return {

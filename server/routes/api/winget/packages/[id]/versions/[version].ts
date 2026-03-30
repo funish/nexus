@@ -2,29 +2,44 @@ import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 
-import type { VersionSingleResponse, VersionSchema } from "../../../../../../utils/winget";
+import { getIndexDb } from "../../../../../../utils/winget/db";
+import { getPackageVersions } from "../../../../../../utils/winget/index";
 import {
-  getVersionManifests,
+  constructManifestPath,
   fetchManifestContent,
-  createWinGetError,
-} from "../../../../../../utils/winget";
+} from "../../../../../../utils/winget/manifest";
+import type { VersionSingleResponse, VersionSchema } from "../../../../../../utils/winget/types";
+import { createWinGetError } from "../../../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {
     tags: ["Versions", "Get"],
-    summary: "Get specific version of a WinGet package",
-    description: "Retrieve version metadata for a specific package version",
+    summary: "Get Version Metadata",
     parameters: [
       {
+        in: "header",
+        name: "Version",
+        description: "API version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
         in: "path",
-        name: "id",
+        name: "PackageIdentifier",
         description: "Package identifier",
         required: true,
         schema: { type: "string" },
       },
       {
         in: "path",
-        name: "version",
+        name: "PackageVersion",
         description: "Package version",
         required: true,
         schema: { type: "string" },
@@ -32,7 +47,7 @@ defineRouteMeta({
     ],
     responses: {
       200: {
-        description: "Successful response with version metadata",
+        description: "Version metadata",
         content: {
           "application/json": {
             schema: {
@@ -53,19 +68,33 @@ defineRouteMeta({
           },
         },
       },
-      404: {
-        description: "Package or version not found",
+      404: { description: "Not Found" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
+                },
+                required: ["ErrorCode", "ErrorMessage"],
+              },
+            },
+          },
+        },
       },
     },
   },
 });
 
 /**
- * GET /api/winget/packages/{PackageIdentifier}/versions/{PackageVersion}
+ * GET /packages/{PackageIdentifier}/versions/{PackageVersion}
  *
  * WinGet.RestSource API - Get specific version metadata
- *
- * Response: VersionSingleResponse (WinGet 1.9.0)
  */
 export default defineHandler(async (event) => {
   const packageId = getRouterParam(event, "id");
@@ -75,33 +104,24 @@ export default defineHandler(async (event) => {
     return createWinGetError(event, 400, "PackageIdentifier and PackageVersion are required");
   }
 
-  // Get all manifest files for this version
-  const manifestFiles = getVersionManifests(packageId, version);
+  const db = await getIndexDb(event);
+  const versions = await getPackageVersions(db, packageId);
 
-  if (manifestFiles.length === 0) {
+  if (!versions.has(version)) {
     return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
-  // Build version metadata
-  const versionData: VersionSchema = {
+  const versionData = {
     PackageVersion: version,
-    DefaultLocale: "en-US", // Fallback default
-  };
+  } as VersionSchema;
 
-  // Parse version manifest to get DefaultLocale and Channel
-  const versionManifestPath = manifestFiles.find(
-    (path) => path.split("/").pop() === `${packageId}.yaml`,
-  );
-
-  if (versionManifestPath) {
-    try {
-      const content = await fetchManifestContent(versionManifestPath);
-      const manifest = parseYAML(content) as Record<string, any>;
-      versionData.DefaultLocale = manifest.DefaultLocale || "en-US";
-      versionData.Channel = manifest.Channel;
-    } catch {
-      // Keep fallback values on error
-    }
+  try {
+    const mainPath = constructManifestPath(packageId, version, "main");
+    const content = await fetchManifestContent(mainPath);
+    const manifest = parseYAML(content) as Record<string, any>;
+    Object.assign(versionData, manifest);
+  } catch {
+    // Keep base values on error
   }
 
   const response: VersionSingleResponse = {

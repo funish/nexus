@@ -2,45 +2,60 @@ import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 
-import type { LocaleSingleResponse, LocaleSchema } from "../../../../../../../../utils/winget";
 import {
   getVersionManifests,
-  getDefaultLocaleManifestPath,
   fetchManifestContent,
-  createWinGetError,
-} from "../../../../../../../../utils/winget";
+} from "../../../../../../../../utils/winget/manifest";
+import type {
+  LocaleSingleResponse,
+  LocaleSchema,
+} from "../../../../../../../../utils/winget/types";
+import { createWinGetError } from "../../../../../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {
     tags: ["Locale", "Get"],
-    summary: "Get specific locale for a package version",
-    description: "Retrieve detailed locale information for a specific package version",
+    summary: "Get Locale Metadata",
     parameters: [
       {
+        in: "header",
+        name: "Version",
+        description: "API version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
         in: "path",
-        name: "id",
+        name: "PackageIdentifier",
         description: "Package identifier",
         required: true,
         schema: { type: "string" },
       },
       {
         in: "path",
-        name: "version",
+        name: "PackageVersion",
         description: "Package version",
         required: true,
         schema: { type: "string" },
       },
       {
         in: "path",
-        name: "locale",
-        description: "Locale code (e.g., 'en-US')",
+        name: "PackageLocale",
+        description: "Locale code",
         required: true,
         schema: { type: "string" },
       },
     ],
     responses: {
       200: {
-        description: "Successful response with locale details",
+        description: "Locale metadata",
         content: {
           "application/json": {
             schema: {
@@ -51,10 +66,28 @@ defineRouteMeta({
                   properties: {
                     PackageLocale: { type: "string" },
                     Publisher: { type: "string" },
+                    PublisherUrl: { type: "string" },
+                    PublisherSupportUrl: { type: "string" },
+                    PrivacyUrl: { type: "string" },
+                    Author: { type: "string" },
                     PackageName: { type: "string" },
+                    PackageUrl: { type: "string" },
+                    License: { type: "string" },
+                    LicenseUrl: { type: "string" },
+                    Copyright: { type: "string" },
+                    CopyrightUrl: { type: "string" },
                     ShortDescription: { type: "string" },
                     Description: { type: "string" },
+                    Tags: { type: "array", items: { type: "string" } },
+                    ReleaseNotes: { type: "string" },
+                    ReleaseNotesUrl: { type: "string" },
+                    Agreements: { type: "array", items: { type: "object" } },
+                    PurchaseUrl: { type: "string" },
+                    InstallationNotes: { type: "string" },
+                    Documentations: { type: "array", items: { type: "object" } },
+                    Icons: { type: "array", items: { type: "object" } },
                   },
+                  required: ["PackageLocale"],
                 },
               },
               required: ["Data"],
@@ -62,8 +95,24 @@ defineRouteMeta({
           },
         },
       },
-      404: {
-        description: "Package, version, or locale not found",
+      404: { description: "Not Found" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
+                },
+                required: ["ErrorCode", "ErrorMessage"],
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -73,8 +122,6 @@ defineRouteMeta({
  * GET /packages/{PackageIdentifier}/versions/{PackageVersion}/locales/{PackageLocale}
  *
  * WinGet.RestSource API - Get specific locale
- *
- * Response: LocaleSingleResponse
  */
 export default defineHandler(async (event) => {
   const packageId = getRouterParam(event, "id");
@@ -89,15 +136,22 @@ export default defineHandler(async (event) => {
     );
   }
 
-  // Get all manifest files for this version
-  const manifestFiles = getVersionManifests(packageId, version);
+  const manifestFiles = await getVersionManifests(packageId, version);
 
   if (manifestFiles.length === 0) {
     return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
   }
 
-  // Construct locale manifest path directly
-  const localeManifestPath = getDefaultLocaleManifestPath(packageId, version, locale);
+  const localeFilename = `${packageId}.locale.${locale}.yaml`;
+  const localeManifestPath = manifestFiles.find((path) => path.split("/").pop() === localeFilename);
+
+  if (!localeManifestPath) {
+    return createWinGetError(
+      event,
+      404,
+      `Locale '${locale}' not found for version ${version} of package '${packageId}'`,
+    );
+  }
 
   try {
     const content = await fetchManifestContent(localeManifestPath);

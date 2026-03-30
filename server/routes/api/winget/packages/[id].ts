@@ -1,28 +1,41 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 
-import type { PackageSingleResponse } from "../../../../utils/winget";
-import { buildPackageIndex, createWinGetError } from "../../../../utils/winget";
+import { getIndexDb } from "../../../../utils/winget/db";
+import { packageExists } from "../../../../utils/winget/index";
+import type { PackageSingleResponse } from "../../../../utils/winget/types";
+import { createWinGetError } from "../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {
     tags: ["Packages", "Get"],
-    summary: "Get specific WinGet package",
-    description: "Retrieve details of a specific WinGet package by its identifier",
+    summary: "Get Package Metadata",
     parameters: [
       {
+        in: "header",
+        name: "Version",
+        description: "API version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        in: "header",
+        name: "Windows-Package-Manager",
+        description: "Windows Package Manager client version",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
         in: "path",
-        name: "id",
-        description: "Package identifier (e.g., 'Microsoft.VisualStudioCode')",
+        name: "PackageIdentifier",
+        description: "Package identifier",
         required: true,
-        schema: {
-          type: "string",
-        },
+        schema: { type: "string" },
       },
     ],
     responses: {
       200: {
-        description: "Successful response",
+        description: "Package metadata",
         content: {
           "application/json": {
             schema: {
@@ -41,19 +54,33 @@ defineRouteMeta({
           },
         },
       },
-      404: {
-        description: "Package not found",
+      404: { description: "Not Found" },
+      default: {
+        description: "An Error Occurred.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  ErrorCode: { type: "integer" },
+                  ErrorMessage: { type: "string" },
+                },
+                required: ["ErrorCode", "ErrorMessage"],
+              },
+            },
+          },
+        },
       },
     },
   },
 });
 
 /**
- * GET /api/winget/packages/{PackageIdentifier}
+ * GET /packages/{PackageIdentifier}
  *
  * WinGet.RestSource API - Get specific package
- *
- * Response: PackageSingleResponse
  */
 export default defineHandler(async (event) => {
   const packageId = getRouterParam(event, "id");
@@ -62,11 +89,9 @@ export default defineHandler(async (event) => {
     return createWinGetError(event, 400, "PackageIdentifier is required");
   }
 
-  // Build package index
-  const packageIndex = await buildPackageIndex(event);
-  const versions = packageIndex.get(packageId);
+  const db = await getIndexDb(event);
 
-  if (!versions) {
+  if (!(await packageExists(db, packageId))) {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 

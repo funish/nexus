@@ -36,6 +36,6 @@
     "pkg-types": "2.3.0",
     "semver": "7.7.4",
     "std-env": "4.0.0",
-    "vite-plus": "0.1.14"
+    "vite-plus": "0.1.15"
   }
 }

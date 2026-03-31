@@ -2,10 +2,17 @@ import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 import semver from "semver";
 
-import { calculateIntegrity } from "../../../utils/integrity";
-import { getContentType } from "../../../utils/mime";
+import {
+  type CdnFile,
+  type CdnPackageListing,
+  getCacheControl,
+  getContentType,
+  getDirectoryListing,
+  isPackageCached,
+  cachePackageFromTarball,
+  extractFileFromTarball,
+} from "../../../utils/cdn";
 import { cacheStorage } from "../../../utils/storage";
-import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 defineRouteMeta({
   openAPI: {
@@ -31,173 +38,6 @@ defineRouteMeta({
     },
   },
 });
-
-// Check if version is a complete semver (x.y.z) that should be cached long-term
-function isCompleteSemver(version: string): boolean {
-  // Complete semver: 1.0.0, 1.0.0-alpha.1, etc.
-  return /^\d+\.\d+\.\d+/.test(version);
-}
-
-// Get appropriate cache-control header based on version
-function getJsrCacheControl(version: string): string {
-  // Incomplete semver or aliases - shorter cache (10 minutes)
-  // Examples: "latest", "1", "1.1", "^1.1.0", "~1.1.0"
-  if (!isCompleteSemver(version)) {
-    return "public, max-age=600";
-  }
-  // Complete semver versions - long cache (1 year, immutable)
-  return "public, max-age=31536000, immutable";
-}
-
-// Check if package metadata is already cached
-async function isJsrPackageCached(packageName: string, version: string): Promise<boolean> {
-  const storage = cacheStorage;
-  const cacheBase = `cdn/jsr/${packageName}/${version}`;
-
-  // Skip cache when version is incomplete semver
-  if (!isCompleteSemver(version)) {
-    return false;
-  }
-
-  // For complete semver versions, check if already cached
-  const cachedMeta = await storage.getMeta(cacheBase);
-  return !!cachedMeta?.files;
-}
-
-// Get a single file from cache or fetch from tarball
-async function getOrCacheJsrFile(
-  packageName: string,
-  version: string,
-  tarballUrl: string,
-  filepath: string,
-): Promise<Uint8Array> {
-  const storage = cacheStorage;
-  const cacheKey = `cdn/jsr/${packageName}/${version}/${filepath}`;
-
-  // Try cache first
-  const cached = await storage.getItemRaw(cacheKey);
-  if (cached) {
-    return new Uint8Array(cached);
-  }
-
-  // Cache miss - download and extract tarball to get the file
-  const tarballRes = await fetch(tarballUrl);
-  if (!tarballRes.ok) {
-    throw new HTTPError({
-      status: 502,
-      statusText: "Failed to download tarball",
-    });
-  }
-
-  const tarballData = await tarballRes.bytes();
-  const archive = new Bun.Archive(tarballData);
-  const filesMap = await archive.files();
-
-  // Determine root directory in tarball
-  const firstPath = [...filesMap.keys()][0];
-  const rootDir = firstPath?.split("/")[0] || "package";
-  const rootPath = `${rootDir}/`;
-
-  // Find and return the requested file
-  let targetFileData: Uint8Array | undefined;
-  for (const [path, file] of filesMap) {
-    const relativePath = path.slice(rootPath.length);
-    if (relativePath === filepath) {
-      targetFileData = await file.bytes();
-      break;
-    }
-  }
-
-  if (!targetFileData) {
-    throw new HTTPError({
-      status: 404,
-      statusText: `File not found: ${filepath}`,
-    });
-  }
-
-  return targetFileData;
-}
-
-// Background task to cache all files from a JSR package version
-async function cacheJsrPackageInBackground(
-  packageName: string,
-  version: string,
-  tarballUrl: string,
-) {
-  try {
-    const storage = cacheStorage;
-    const cacheBase = `cdn/jsr/${packageName}/${version}`;
-
-    // Check if already cached
-    const cachedMeta = await storage.getMeta(cacheBase);
-    if (cachedMeta?.files) {
-      return; // Already cached
-    }
-
-    // Download and extract tarball
-    const tarballRes = await fetch(tarballUrl);
-    if (!tarballRes.ok) {
-      console.error(`Failed to download JSR tarball for ${packageName}@${version}`);
-      return;
-    }
-
-    const tarballData = await tarballRes.bytes();
-    const archive = new Bun.Archive(tarballData);
-    const filesMap = await archive.files();
-
-    // Determine root directory in tarball
-    const firstPath = [...filesMap.keys()][0];
-    const rootDir = firstPath?.split("/")[0] || "package";
-    const rootPath = `${rootDir}/`;
-
-    // Build file list metadata
-    const fileList: Array<CdnFile> = [];
-    for (const [path, file] of filesMap) {
-      fileList.push({
-        name: path.slice(rootPath.length),
-        size: file.size,
-      });
-    }
-
-    // Optimization: Concurrent caching using Promise.allSettled
-    const cachePromises = Array.from(filesMap.entries()).map(async ([path, file]) => {
-      const relativePath = path.slice(rootPath.length);
-      const cacheKey = `${cacheBase}/${relativePath}`;
-
-      try {
-        // Check if already cached
-        const exists = await storage.getItemRaw(cacheKey);
-        if (exists) {
-          return; // Skip if already exists
-        }
-
-        // Cache file data
-        const fileData = await file.bytes();
-        await storage.setItemRaw(cacheKey, fileData);
-
-        // Calculate SHA-256 integrity for SRI
-        const integrity = await calculateIntegrity(fileData);
-
-        // Update file list with integrity
-        const fileItem = fileList.find((f) => f.name === relativePath);
-        if (fileItem) {
-          fileItem.integrity = integrity;
-        }
-      } catch (error) {
-        console.error(`Failed to cache file ${relativePath}:`, error);
-        // Continue with other files even if this one fails
-      }
-    });
-
-    // Wait for all cache operations to complete (even if some fail)
-    await Promise.allSettled(cachePromises);
-
-    // Store file list in meta
-    await storage.setMeta(cacheBase, { files: fileList });
-  } catch (error) {
-    console.error(`Background cache failed for ${packageName}@${version}:`, error);
-  }
-}
 
 /**
  * CDN JSR route handler
@@ -291,11 +131,16 @@ export default defineHandler(async (event) => {
   const cacheBase = `cdn/jsr/${packageName}/${version}`;
 
   // Check if entire package is already cached
-  const isCached = await isJsrPackageCached(packageName, version);
+  const cacheable = semver.valid(version) !== null;
+  const isCached = await isPackageCached(cacheBase, cacheable);
 
   // Read package.json to get exports field for entry file
   let entryFile = "mod.ts"; // Default fallback
-  const packageJsonData = await getOrCacheJsrFile(packageName, version, tarballUrl, "package.json");
+  const packageJsonData = await extractFileFromTarball(
+    tarballUrl,
+    "package.json",
+    `${cacheBase}/package.json`,
+  );
   if (packageJsonData) {
     try {
       const packageJson = JSON.parse(new TextDecoder().decode(packageJsonData));
@@ -322,7 +167,9 @@ export default defineHandler(async (event) => {
 
   // Trigger background caching for entire package (if not already cached)
   if (!isCached) {
-    event.waitUntil(cacheJsrPackageInBackground(packageName, version, tarballUrl));
+    event.waitUntil(
+      cachePackageFromTarball(tarballUrl, cacheBase, undefined, `jsr:${packageName}@${version}`),
+    );
   }
 
   // Special handling for package root access
@@ -331,7 +178,12 @@ export default defineHandler(async (event) => {
       // /cdn/jsr/@luca/flag/ -> list directory contents with metadata
       // If not cached, wait for entire package to be cached
       if (!isCached) {
-        await cacheJsrPackageInBackground(packageName, version, tarballUrl);
+        await cachePackageFromTarball(
+          tarballUrl,
+          cacheBase,
+          undefined,
+          `jsr:${packageName}@${version}`,
+        );
       }
 
       const meta = await storage.getMeta(cacheBase);
@@ -341,10 +193,8 @@ export default defineHandler(async (event) => {
       event.res.headers.set("Cache-Control", "public, max-age=600");
 
       const response: CdnPackageListing = {
-        // Package metadata
         name: metadata.name,
         version: version,
-        // Directory info
         path: "",
         files: fileList,
       };
@@ -352,7 +202,11 @@ export default defineHandler(async (event) => {
       return response;
     } else {
       // /cdn/jsr/@luca/flag -> return entry file
-      const fileData = await getOrCacheJsrFile(packageName, version, tarballUrl, entryFile);
+      const fileData = await extractFileFromTarball(
+        tarballUrl,
+        entryFile,
+        `${cacheBase}/${entryFile}`,
+      );
 
       if (!fileData) {
         throw new HTTPError({
@@ -362,9 +216,8 @@ export default defineHandler(async (event) => {
       }
 
       const contentType = getContentType(entryFile);
-
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set("Cache-Control", getJsrCacheControl(version));
+      event.res.headers.set("Cache-Control", getCacheControl(version));
 
       return Buffer.from(fileData);
     }
@@ -372,19 +225,16 @@ export default defineHandler(async (event) => {
 
   // For non-root paths, try to get file from cache or tarball
   try {
-    const fileData = await getOrCacheJsrFile(packageName, version, tarballUrl, filepath);
+    const fileData = await extractFileFromTarball(tarballUrl, filepath, `${cacheBase}/${filepath}`);
 
-    // Return file content
     const contentType = getContentType(filepath);
-
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getJsrCacheControl(version));
+    event.res.headers.set("Cache-Control", getCacheControl(version));
 
     return Buffer.from(fileData);
   } catch (error) {
     // If file not found, try to list as directory
     if ((error as HTTPError).statusCode === 404) {
-      // Package must be cached to list directories
       if (!isCached) {
         throw new HTTPError({
           status: 404,
@@ -392,40 +242,18 @@ export default defineHandler(async (event) => {
         });
       }
 
-      const meta = await storage.getMeta(cacheBase);
-      const allFiles =
-        (meta?.files as Array<{ name: string; type: string; size: number }> | undefined) || [];
-
-      // Filter files by directory prefix
-      const dirPrefix = `${filepath}/`;
-      const dirContents: CdnFile[] = allFiles
-        .filter((file: { name: string }) => file.name.startsWith(dirPrefix))
-        .map((file: { name: string; size: number }) => ({
-          name: file.name.slice(dirPrefix.length),
-          size: file.size,
-        }))
-        .filter((file: { name: string }) => file.name.length > 0);
-
-      if (dirContents.length === 0) {
+      const listing = await getDirectoryListing(cacheBase, filepath, metadata.name, version);
+      if (!listing) {
         throw new HTTPError({
           status: 404,
           statusText: `Path not found: ${filepath}`,
         });
       }
 
-      dirContents.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
-
       event.res.headers.set("Content-Type", "application/json");
       event.res.headers.set("Cache-Control", "public, max-age=600");
 
-      const response: CdnPackageListing = {
-        name: metadata.name,
-        version: version,
-        path: filepath,
-        files: dirContents,
-      };
-
-      return response;
+      return listing;
     }
 
     throw error;

@@ -3,8 +3,8 @@ import { defineHandler, getRouterParam } from "nitro/h3";
 
 import { getIndexDb } from "../../../../utils/winget/db";
 import { packageExists } from "../../../../utils/winget/index";
+import { createWinGetError } from "../../../../utils/winget/response";
 import type { PackageSingleResponse } from "../../../../utils/winget/types";
-import { createWinGetError } from "../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {

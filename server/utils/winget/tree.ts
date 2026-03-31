@@ -16,6 +16,7 @@ import type { GitHubTreeResponse } from "./types";
  */
 export function getGitHubHeaders(): HeadersInit {
   const token = env.GITHUB_TOKEN;
+
   const headers: HeadersInit = {
     "User-Agent": "Funish Nexus",
   };
@@ -122,6 +123,22 @@ export async function getManifestsSha(): Promise<string> {
  * Get all letter directory SHAs from manifests (a-z, 0-9)
  */
 export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
+  const cacheKey = `${CACHE_PREFIX}/letter-shas`;
+
+  // Check cache
+  const meta = await cacheStorage.getMeta(cacheKey);
+  const now = new Date();
+
+  if (meta?.mtime) {
+    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
+    if (cacheAge < UPDATE_INTERVAL) {
+      const cached = await cacheStorage.getItem(cacheKey);
+      if (cached) {
+        return new Map(Object.entries(cached as Record<string, string>));
+      }
+    }
+  }
+
   const manifestsSha = await getManifestsSha();
   const manifestsTree = await getGitHubTree(manifestsSha, false);
 
@@ -136,6 +153,10 @@ export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
   if (letterShas.size === 0) {
     throw new Error("No letter directories found in manifests");
   }
+
+  // Cache as plain object (Map is not serializable)
+  await cacheStorage.setItem(cacheKey, Object.fromEntries(letterShas));
+  await cacheStorage.setMeta(cacheKey, { mtime: new Date() });
 
   return letterShas;
 }

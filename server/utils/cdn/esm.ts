@@ -1,6 +1,6 @@
 import semver from "semver";
 
-import { cacheStorage } from "./storage";
+import { cacheStorage } from "../storage";
 
 export interface BundleOptions {
   packageName: string;
@@ -48,9 +48,6 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
       const range = new semver.Range(rangeStr);
 
       // Get comparators from the range to find the upper bound
-      // For "1 - 2", this will be >=1.0.0 <3.0.0-0, so we want 2
-      // For "^1.2.3", this will be >=1.2.3 <2.0.0-0, so we want 1
-      // For "~1.2.3", this will be >=1.2.3 <1.3.0-0, so we want 1.2
       let targetVersion: string | null = null;
 
       for (const comparatorSet of range.set) {
@@ -58,19 +55,13 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
           // Look for the upper bound (comparator with < operator)
           if (comparator.operator === "<") {
             const version = comparator.semver;
-            // For <3.0.0-0, we want 2 (major - 1)
-            // For <2.0.0-0, we want 1 (major - 1)
-            // For <1.3.0-0, we want 1.2 (major.minor-1)
             if (version.patch === 0 && version.prerelease && version.prerelease[0] === 0) {
-              // This is the upper bound format like <3.0.0-0
               const major = version.major;
               const minor = version.minor;
 
               if (minor === 0) {
-                // <3.0.0-0 -> use 2
                 targetVersion = String(major - 1);
               } else {
-                // <1.3.0-0 -> use 1.2
                 targetVersion = `${major}.${minor - 1}`;
               }
               break;
@@ -92,7 +83,6 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
         dependencies[depName] = targetVersion;
       }
     } catch (error) {
-      // If semver parsing fails, skip this dependency
       console.error(`[Bundler] Error resolving ${depName}:`, error);
     }
   }
@@ -131,7 +121,7 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
   // Bundle with Bun.build
   const buildResult = await Bun.build({
     entrypoints: [`/virtual/${packageName}/${normalizedEntryPoint}`],
-    root: "/", // Set root to avoid file system resolution issues
+    root: "/",
     target: "browser",
     format: "esm",
     external: external,
@@ -143,7 +133,6 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
         setup(build) {
           // Handle module resolution - must filter for virtual paths
           build.onResolve({ filter: /^\/virtual\// }, (args) => {
-            // Handle absolute virtual paths
             if (args.path in files) {
               return { path: args.path, namespace: "virtual" };
             }
@@ -152,7 +141,6 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
 
           // Handle relative imports from virtual files
           build.onResolve({ filter: /^\.\.?\// }, (args) => {
-            // Only process if the importer is a virtual file
             if (args.importer.startsWith("/virtual/")) {
               const importerDir = args.importer.substring(0, args.importer.lastIndexOf("/"));
 
@@ -178,7 +166,6 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
 
           // Handle bare imports (external dependencies)
           build.onResolve({ filter: /^[^./]/ }, (args) => {
-            // Mark as external for bare imports
             return { path: args.path, external: true };
           });
 
@@ -202,12 +189,9 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
   let bundledCode = await output.text();
 
   // Rewrite external imports to CDN paths
-  // Process all dependencies, not just those in the initial list
-  // to catch transitive dependencies
   const allImports = new Set<string>();
 
-  // First pass: find all bare imports in the code
-  // Matches both: import/export ... from "x" and export*from"x" (minified)
+  // Find all bare imports in the code
   const importRegex = /(?:import|export)\s*(?:\*|\{[^}]*\}|\w+)?\s*from\s*["']([^"']+)["']/g;
   let match;
   while ((match = importRegex.exec(bundledCode)) !== null) {
@@ -217,15 +201,13 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
     }
   }
 
-  // Second pass: rewrite all bare imports to CDN paths
+  // Rewrite all bare imports to CDN paths
   for (const depName of allImports) {
-    // Use versioned path if available, otherwise fallback to unversioned path
     const cdnPath = cdnPaths[depName] || `/cdn/npm/${depName}/+esm`;
-    // Match both: "dep" and from"dep" (minified), then replace with CDN path
     bundledCode = bundledCode.replaceAll(
       new RegExp(`(?:from)?(["'])${depName}\\1`, "g"),
-      (match, quote) =>
-        match.startsWith("from") ? `from${quote}${cdnPath}${quote}` : `${quote}${cdnPath}${quote}`,
+      (m, quote) =>
+        m.startsWith("from") ? `from${quote}${cdnPath}${quote}` : `${quote}${cdnPath}${quote}`,
     );
   }
 

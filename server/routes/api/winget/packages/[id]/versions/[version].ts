@@ -8,8 +8,8 @@ import {
   constructManifestPath,
   fetchManifestContent,
 } from "../../../../../../utils/winget/manifest";
+import { createWinGetError } from "../../../../../../utils/winget/response";
 import type { VersionSingleResponse, VersionSchema } from "../../../../../../utils/winget/types";
-import { createWinGetError } from "../../../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {

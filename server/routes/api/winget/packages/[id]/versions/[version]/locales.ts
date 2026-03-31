@@ -6,8 +6,8 @@ import {
   getVersionManifests,
   fetchManifestContent,
 } from "../../../../../../../utils/winget/manifest";
+import { createWinGetError } from "../../../../../../../utils/winget/response";
 import type { LocaleMultipleResponse, LocaleSchema } from "../../../../../../../utils/winget/types";
-import { createWinGetError } from "../../../../../../../utils/winget/utils";
 
 defineRouteMeta({
   openAPI: {

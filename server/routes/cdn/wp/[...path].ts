@@ -1,7 +1,7 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 
-import { getContentType } from "../../../utils/mime";
+import { getContentType } from "../../../utils/cdn";
 import { cacheStorage } from "../../../utils/storage";
 
 defineRouteMeta({

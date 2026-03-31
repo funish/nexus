@@ -1,8 +1,4 @@
 /**
- * CDN unified types
- */
-
-/**
  * File item in directory listing
  */
 export interface CdnFile {
@@ -14,10 +10,6 @@ export interface CdnFile {
 /**
  * Directory listing response
  * All CDN endpoints return this format for directory listings
- *
- * @example
- * Accessing /cdn/npm/uikit/dist/ returns:
- * { path: "dist", files: [...] }
  */
 export interface CdnDirectoryListing {
   path: string;

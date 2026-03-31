@@ -9,7 +9,7 @@ import type {
   PackageMatchField,
   SearchRequestPackageMatchFilter,
 } from "./types";
-import { compareVersion } from "./utils";
+import { compareVersion } from "./version";
 
 // Text matching
 

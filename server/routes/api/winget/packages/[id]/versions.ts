@@ -5,8 +5,9 @@ import { defineHandler, getQuery, getRouterParam } from "nitro/h3";
 import { getIndexDb } from "../../../../../utils/winget/db";
 import { getPackageVersions } from "../../../../../utils/winget/index";
 import { constructManifestPath, fetchManifestContent } from "../../../../../utils/winget/manifest";
+import { createWinGetError } from "../../../../../utils/winget/response";
 import type { VersionMultipleResponse, VersionSchema } from "../../../../../utils/winget/types";
-import { createWinGetError, compareVersion } from "../../../../../utils/winget/utils";
+import { compareVersion } from "../../../../../utils/winget/version";
 
 defineRouteMeta({
   openAPI: {

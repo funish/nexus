@@ -2,9 +2,13 @@ import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam, HTTPError } from "nitro/h3";
 import semver from "semver";
 
-import { getContentType } from "../../../utils/mime";
+import {
+  type CdnFile,
+  type CdnPackageListing,
+  getCacheControl,
+  getContentType,
+} from "../../../utils/cdn";
 import { cacheStorage } from "../../../utils/storage";
-import type { CdnFile, CdnPackageListing } from "../../../utils/types";
 
 defineRouteMeta({
   openAPI: {
@@ -30,26 +34,6 @@ defineRouteMeta({
     },
   },
 });
-
-// Check if version is a complete semver (x.y.z) that should be cached long-term
-function isCompleteSemver(version: string): boolean {
-  // Complete semver: 1.2.3, v1.2.3, 1.2.3-alpha.1, etc.
-  // Remove 'v' prefix if present, then check for x.y.z format
-  const normalizedVersion = version.replace(/^v/, "");
-  return /^\d+\.\d+\.\d+/.test(normalizedVersion);
-}
-
-// Get appropriate cache-control header based on version
-function getCdnjsCacheControl(version: string): string {
-  // Incomplete semver or aliases - shorter cache (10 minutes)
-  // Examples: "latest", "3", "3.7", "v3.7"
-  if (!isCompleteSemver(version)) {
-    return "public, max-age=600";
-  }
-  // Complete semver versions - long cache (1 year, immutable)
-  // Examples: "3.7.1", "v3.7.1", "3.7.1-beta"
-  return "public, max-age=31536000, immutable";
-}
 
 // Get file from cache or fetch from GitHub
 // Returns immediately without blocking on cache write
@@ -221,7 +205,7 @@ export default defineHandler(async (event) => {
   }
 
   // If version not specified or incomplete, fetch from cdnjs API to get complete version
-  if (!version || !isCompleteSemver(version)) {
+  if (!version || !semver.valid(version)) {
     const apiUrl = `https://api.cdnjs.com/libraries/${library}?fields=version,versions,filename`;
     const apiRes = await fetch(apiUrl);
 
@@ -285,7 +269,7 @@ export default defineHandler(async (event) => {
         const contentType = getContentType(defaultFile);
 
         event.res.headers.set("Content-Type", contentType);
-        event.res.headers.set("Cache-Control", getCdnjsCacheControl(version));
+        event.res.headers.set("Cache-Control", getCacheControl(version));
 
         return Buffer.from(defaultFileData);
       }
@@ -320,7 +304,7 @@ export default defineHandler(async (event) => {
     const contentType = getContentType(filepath);
 
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getCdnjsCacheControl(version));
+    event.res.headers.set("Cache-Control", getCacheControl(version));
 
     return Buffer.from(fileData);
   } catch (error) {

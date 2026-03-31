@@ -6,8 +6,9 @@ import type { H3Event } from "nitro/h3";
 import { getIndexDb } from "../../../../utils/winget/db";
 import { getPackageVersions } from "../../../../utils/winget/index";
 import { getVersionManifests, fetchManifestContent } from "../../../../utils/winget/manifest";
+import { createWinGetError } from "../../../../utils/winget/response";
 import type { VersionManifest } from "../../../../utils/winget/types";
-import { createWinGetError, compareVersion } from "../../../../utils/winget/utils";
+import { compareVersion } from "../../../../utils/winget/version";
 
 defineRouteMeta({
   openAPI: {
@@ -160,47 +161,50 @@ export default defineHandler(async (event: H3Event) => {
       const manifestFiles = await getVersionManifests(packageId, version);
       if (manifestFiles.length === 0) return;
 
+      // Fetch all manifest files in parallel
+      const fetched = await Promise.allSettled(
+        manifestFiles.map(async (manifestPath) => {
+          const content = await fetchManifestContent(manifestPath);
+          return {
+            filename: manifestPath.split("/").pop()!,
+            manifest: parseYAML(content) as Record<string, any>,
+          };
+        }),
+      );
+
       const versionEntry: VersionManifest = { PackageVersion: version };
 
-      for (const manifestPath of manifestFiles) {
-        const filename = manifestPath.split("/").pop()!;
+      for (const result of fetched) {
+        if (result.status !== "fulfilled") continue;
+        const { filename, manifest } = result.value;
 
-        try {
-          const content = await fetchManifestContent(manifestPath);
-          const manifest = parseYAML(content) as Record<string, any>;
-
-          if (filename === `${packageId}.yaml`) {
-            versionEntry.DefaultLocale = manifest.DefaultLocale;
-            versionEntry.Channel = manifest.Channel;
-            // Include default locale data in Locales array only if main manifest has locale fields
-            // and no matching .locale.{DefaultLocale}.yaml file exists
-            const hasLocaleData = Boolean(
-              manifest.PackageLocale || manifest.Publisher || manifest.PackageName,
-            );
-            const dl = manifest.DefaultLocale || manifest.PackageLocale;
-            const hasDefaultLocaleFile = dl
-              ? manifestFiles.some((p) => p.includes(`.locale.${dl}.yaml`))
-              : false;
-            if (hasLocaleData && !hasDefaultLocaleFile) {
-              if (!versionEntry.Locales) versionEntry.Locales = [];
-              versionEntry.Locales.unshift({
-                PackageLocale: dl || manifest.PackageLocale,
-                ...manifest,
-              } as Record<string, any>);
-            }
-          } else if (filename.match(/\.installer\.yaml$/)) {
-            if (manifest.Installers && Array.isArray(manifest.Installers)) {
-              versionEntry.Installers = manifest.Installers.map((inst: Record<string, any>) => ({
-                ...manifest,
-                ...inst,
-              }));
-            }
-          } else if (filename.match(/\.locale\.([^.]+)\.yaml$/)) {
+        if (filename === `${packageId}.yaml`) {
+          versionEntry.DefaultLocale = manifest.DefaultLocale;
+          versionEntry.Channel = manifest.Channel;
+          const hasLocaleData = Boolean(
+            manifest.PackageLocale || manifest.Publisher || manifest.PackageName,
+          );
+          const dl = manifest.DefaultLocale || manifest.PackageLocale;
+          const hasDefaultLocaleFile = dl
+            ? manifestFiles.some((p) => p.includes(`.locale.${dl}.yaml`))
+            : false;
+          if (hasLocaleData && !hasDefaultLocaleFile) {
             if (!versionEntry.Locales) versionEntry.Locales = [];
-            versionEntry.Locales.push(manifest);
+            versionEntry.Locales.unshift({
+              PackageLocale: dl || manifest.PackageLocale,
+              ...manifest,
+            } as Record<string, any>);
           }
-        } catch {
-          // Skip individual file errors
+        } else if (filename.match(/\.installer\.yaml$/)) {
+          if (manifest.Installers && Array.isArray(manifest.Installers)) {
+            versionEntry.Installers = manifest.Installers.map((inst: Record<string, any>) => ({
+              ...manifest,
+              ...inst,
+            }));
+          }
+        } else if (filename.match(/\.locale\.([^.]+)\.yaml$/)) {
+          if (!versionEntry.Locales) versionEntry.Locales = [];
+          versionEntry.Locales.push(manifest);
         }
       }
 

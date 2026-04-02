@@ -3,10 +3,11 @@ import { defineHandler, getQuery, readBody } from "nitro/h3";
 
 import { getIndexDb } from "../../../utils/winget/db";
 import { searchPackages } from "../../../utils/winget/search";
+import { decodeContinuationToken, encodeContinuationToken } from "../../../utils/winget/token";
 import type {
-  ManifestSearchRequest,
-  ManifestSearchResult,
-  MatchType,
+  WinGetManifestSearchRequest,
+  WinGetManifestSearchResult,
+  WinGetMatchType,
 } from "../../../utils/winget/types";
 
 defineRouteMeta({
@@ -151,10 +152,10 @@ defineRouteMeta({
  * - GET: Query parameters (compatibility mode)
  */
 export default defineHandler(async (event) => {
-  let searchRequest: ManifestSearchRequest;
+  let searchRequest: WinGetManifestSearchRequest;
 
   if (event.req.method === "POST") {
-    const body = (await readBody(event)) as ManifestSearchRequest;
+    const body = (await readBody(event)) as WinGetManifestSearchRequest;
     searchRequest = {
       MaximumResults: body.MaximumResults,
       FetchAllManifests: body.FetchAllManifests,
@@ -172,7 +173,7 @@ export default defineHandler(async (event) => {
       Query: query.query
         ? {
             KeyWord: query.query as string,
-            MatchType: (query.matchType as MatchType) || "CaseInsensitive",
+            MatchType: (query.matchType as WinGetMatchType) || "CaseInsensitive",
           }
         : undefined,
     };
@@ -192,17 +193,15 @@ export default defineHandler(async (event) => {
     filters: searchRequest.Filters,
   });
 
-  const response: ManifestSearchResult = {
+  const response: WinGetManifestSearchResult = {
     Data: results,
     RequiredPackageMatchFields: ["PackageIdentifier"],
     UnsupportedPackageMatchFields: ["Market", "HasInstallerType"],
   };
 
   if (hasMore) {
-    const nextOffset =
-      (headerToken ? parseInt(Buffer.from(headerToken, "base64").toString(), 10) : 0) +
-      results.length;
-    response.ContinuationToken = Buffer.from(nextOffset.toString()).toString("base64");
+    const currentOffset = decodeContinuationToken(headerToken);
+    response.ContinuationToken = encodeContinuationToken(currentOffset + results.length);
   }
 
   event.res.headers.set("Cache-Control", "public, max-age=300");

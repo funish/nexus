@@ -6,15 +6,17 @@ import {
   type CdnFile,
   type CdnOrgListing,
   type CdnPackageListing,
-  CACHE_CONTROL_SHORT,
-  NPM_REGISTRY_URL,
-  bundleNpmPackage,
+  CDN_CACHE_LONG,
+  CDN_CACHE_SHORT,
+  CDN_NPM_REGISTRY,
+  bundleEsmPackage,
   getCacheControl,
   getContentType,
   getDirectoryListing,
   isPackageCached,
   cachePackageFromTarball,
   extractFileFromTarball,
+  resolveRegistryVersion,
 } from "../../../utils/cdn";
 import { cacheStorage } from "../../../utils/storage";
 
@@ -72,7 +74,7 @@ export default defineHandler(async (event) => {
     const scopeOnlyMatch = path.match(/^@([^/]+)\/?$/);
     if (scopeOnlyMatch) {
       const [, scope] = scopeOnlyMatch;
-      const orgRes = await fetch(`${NPM_REGISTRY_URL}/-/org/${scope}/package`);
+      const orgRes = await fetch(`${CDN_NPM_REGISTRY}/-/org/${scope}/package`);
       if (!orgRes.ok) {
         throw new HTTPError({ status: 404, statusText: "Organization not found" });
       }
@@ -80,7 +82,7 @@ export default defineHandler(async (event) => {
       const packages = Object.keys(orgData);
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", CACHE_CONTROL_SHORT);
+      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
 
       const response: CdnOrgListing = {
         name: `@${scope}`,
@@ -125,7 +127,7 @@ export default defineHandler(async (event) => {
   }
 
   // Fetch package metadata from npm registry
-  const metadataRes = await fetch(`${NPM_REGISTRY_URL}/${packageName}`);
+  const metadataRes = await fetch(`${CDN_NPM_REGISTRY}/${packageName}`);
   if (!metadataRes.ok) {
     throw new HTTPError({
       status: 404,
@@ -134,47 +136,22 @@ export default defineHandler(async (event) => {
   }
 
   const metadata = await metadataRes.json();
-  const distTags = metadata["dist-tags"];
 
-  // Try to get specified version, fallback to latest if not found
-  let versionInfo = metadata.versions[version];
-
-  // If exact version not found, try to resolve version range (e.g., "3", "3.1", "^3.1.0")
-  if (!versionInfo) {
-    const allVersions = Object.keys(metadata.versions);
-
-    // Try semver range matching
-    const matchedVersion = semver.maxSatisfying(allVersions, version);
-    if (matchedVersion) {
-      version = matchedVersion;
-      versionInfo = metadata.versions[version];
-    }
+  // Resolve version: exact → semver range → latest dist-tag
+  const resolved = resolveRegistryVersion(metadata, version);
+  if (!resolved) {
+    throw new HTTPError({ status: 404, statusText: "Version not found" });
   }
-
-  // Fallback to latest if still not found
-  if (!versionInfo && distTags?.latest) {
-    const latest = distTags.latest;
-    if (latest) {
-      versionInfo = metadata.versions[latest];
-      version = latest;
-    }
-  }
-
-  if (!versionInfo) {
-    throw new HTTPError({
-      status: 404,
-      statusText: "Version not found",
-    });
-  }
+  const { version: resolvedVersion, versionInfo } = resolved;
 
   // Download tarball info
   const tarballUrl = versionInfo.dist.tarball;
 
   const storage = cacheStorage;
-  const cacheBase = `cdn/npm/${packageName}/${version}`;
+  const cacheBase = `cdn/npm/${packageName}/${resolvedVersion}`;
 
   // Check if entire package is already cached
-  const cacheable = semver.valid(version) !== null;
+  const cacheable = semver.valid(resolvedVersion) !== null;
   const isCached = await isPackageCached(cacheBase, cacheable);
 
   // Handle +esm bundling request
@@ -188,20 +165,20 @@ export default defineHandler(async (event) => {
         tarballUrl,
         cacheBase,
         undefined,
-        `npm:${packageName}@${version}`,
+        `npm:${packageName}@${resolvedVersion}`,
       );
     }
 
     // Bundle the package
-    const bundledCode = await bundleNpmPackage({
+    const bundledCode = await bundleEsmPackage({
       packageName,
-      version,
+      version: resolvedVersion,
       entryPoint: entryFile,
     });
 
     event.res.headers.set("Content-Type", "application/javascript; charset=utf-8");
-    event.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
-    event.res.headers.set("X-ESM-Version", version);
+    event.res.headers.set("Cache-Control", CDN_CACHE_LONG);
+    event.res.headers.set("X-ESM-Version", resolvedVersion);
 
     return bundledCode;
   }
@@ -216,7 +193,7 @@ export default defineHandler(async (event) => {
           tarballUrl,
           cacheBase,
           undefined,
-          `npm:${packageName}@${version}`,
+          `npm:${packageName}@${resolvedVersion}`,
         );
       }
 
@@ -224,11 +201,11 @@ export default defineHandler(async (event) => {
       const fileList = (meta?.files || []) as Array<CdnFile>;
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", "public, max-age=600");
+      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
 
       const response: CdnPackageListing = {
         name: metadata.name,
-        version: version,
+        version: resolvedVersion,
         path: "",
         files: fileList,
       };
@@ -250,14 +227,14 @@ export default defineHandler(async (event) => {
             tarballUrl,
             cacheBase,
             undefined,
-            `npm:${packageName}@${version}`,
+            `npm:${packageName}@${resolvedVersion}`,
           ),
         );
       }
 
       const contentType = getContentType(entryFile);
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set("Cache-Control", getCacheControl(version));
+      event.res.headers.set("Cache-Control", getCacheControl(resolvedVersion));
 
       return Buffer.from(fileData);
     }
@@ -269,13 +246,18 @@ export default defineHandler(async (event) => {
 
     if (!isCached) {
       event.waitUntil(
-        cachePackageFromTarball(tarballUrl, cacheBase, undefined, `npm:${packageName}@${version}`),
+        cachePackageFromTarball(
+          tarballUrl,
+          cacheBase,
+          undefined,
+          `npm:${packageName}@${resolvedVersion}`,
+        ),
       );
     }
 
     const contentType = getContentType(filepath);
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getCacheControl(version));
+    event.res.headers.set("Cache-Control", getCacheControl(resolvedVersion));
 
     return Buffer.from(fileData);
   } catch (error) {
@@ -288,7 +270,12 @@ export default defineHandler(async (event) => {
         });
       }
 
-      const listing = await getDirectoryListing(cacheBase, filepath, metadata.name, version);
+      const listing = await getDirectoryListing(
+        cacheBase,
+        filepath,
+        metadata.name,
+        resolvedVersion,
+      );
       if (!listing) {
         throw new HTTPError({
           status: 404,
@@ -297,7 +284,7 @@ export default defineHandler(async (event) => {
       }
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", "public, max-age=600");
+      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
 
       return listing;
     }

@@ -1,18 +1,13 @@
 import semver from "semver";
 
 import { cacheStorage } from "../storage";
-
-export interface BundleOptions {
-  packageName: string;
-  version: string;
-  entryPoint: string;
-}
+import type { CdnEsmBundleOptions } from "./types";
 
 /**
  * Bundle an npm package using Bun.build from cached files
  * Returns a bundled ESM module as a string
  */
-export async function bundleNpmPackage(options: BundleOptions): Promise<string> {
+export async function bundleEsmPackage(options: CdnEsmBundleOptions): Promise<string> {
   const { packageName, version, entryPoint } = options;
   const storage = cacheStorage;
   const cacheBase = `cdn/npm/${packageName}/${version}`;

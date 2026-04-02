@@ -7,7 +7,10 @@ import {
   fetchManifestContent,
 } from "../../../../../../../utils/winget/manifest";
 import { createWinGetError } from "../../../../../../../utils/winget/response";
-import type { LocaleMultipleResponse, LocaleSchema } from "../../../../../../../utils/winget/types";
+import type {
+  WinGetLocaleMultipleResponse,
+  WinGetLocaleSchema,
+} from "../../../../../../../utils/winget/types";
 
 defineRouteMeta({
   openAPI: {
@@ -148,7 +151,7 @@ export default defineHandler(async (event) => {
   const localeFiles = manifestFiles.filter((path) => path.includes(".locale."));
 
   // Fetch main manifest once to determine if it provides default locale data
-  let mainLocaleEntry: LocaleSchema | null = null;
+  let mainLocaleEntry: WinGetLocaleSchema | null = null;
   if (mainManifestFile) {
     try {
       const content = await fetchManifestContent(mainManifestFile);
@@ -165,7 +168,7 @@ export default defineHandler(async (event) => {
         mainLocaleEntry = {
           PackageLocale: defaultLocale || manifest.PackageLocale,
           ...manifest,
-        } as LocaleSchema;
+        } as WinGetLocaleSchema;
       }
     } catch {
       // Ignore
@@ -202,11 +205,11 @@ export default defineHandler(async (event) => {
       return {
         PackageLocale: localeMatch[1],
         ...manifest,
-      } as LocaleSchema;
+      } as WinGetLocaleSchema;
     }),
   );
 
-  const locales: LocaleSchema[] = [];
+  const locales: WinGetLocaleSchema[] = [];
 
   // Include main locale on the first page
   if (mainLocaleEntry && startIndex === 0) {
@@ -219,7 +222,7 @@ export default defineHandler(async (event) => {
     }
   }
 
-  const response: LocaleMultipleResponse = {
+  const response: WinGetLocaleMultipleResponse = {
     Data: locales,
   };
 

@@ -8,7 +8,7 @@
 /**
  * GitHub Tree API response item
  */
-export interface GitHubTreeItem {
+export interface WinGetGitHubTreeItem {
   path: string;
   mode: string;
   type: "tree" | "blob";
@@ -20,10 +20,10 @@ export interface GitHubTreeItem {
 /**
  * GitHub Tree API response
  */
-export interface GitHubTreeResponse {
+export interface WinGetGitHubTreeResponse {
   sha: string;
   url: string;
-  tree: GitHubTreeItem[];
+  tree: WinGetGitHubTreeItem[];
   truncated: boolean;
 }
 
@@ -33,34 +33,34 @@ export interface GitHubTreeResponse {
  * Package identifier in WinGet format
  * Example: Microsoft.VisualStudioCode
  */
-export type PackageIdentifier = string;
+export type WinGetPackageIdentifier = string;
 
 /**
  * Package version
  * Example: 1.95.0
  */
-export type PackageVersion = string;
+export type WinGetPackageVersion = string;
 
 /**
  * WinGet package metadata (PackageSchema)
  */
 export interface WinGetPackage {
-  PackageIdentifier: PackageIdentifier;
+  PackageIdentifier: WinGetPackageIdentifier;
 }
 
 /**
  * Single package response
  */
-export interface PackageSingleResponse {
+export interface WinGetPackageSingleResponse {
   Data: {
-    PackageIdentifier: PackageIdentifier;
+    PackageIdentifier: WinGetPackageIdentifier;
   };
 }
 
 /**
  * Multiple packages response (with pagination)
  */
-export interface PackageMultipleResponse {
+export interface WinGetPackageMultipleResponse {
   Data: WinGetPackage[];
   ContinuationToken?: string;
 }
@@ -70,8 +70,8 @@ export interface PackageMultipleResponse {
 /**
  * Version Schema (WinGet 1.9.0)
  */
-export interface VersionSchema {
-  PackageVersion: PackageVersion;
+export interface WinGetVersionSchema {
+  PackageVersion: WinGetPackageVersion;
   DefaultLocale: string;
   Channel?: string;
 }
@@ -79,14 +79,14 @@ export interface VersionSchema {
 /**
  * Single version response (WinGet 1.9.0)
  */
-export interface VersionSingleResponse {
-  Data: VersionSchema;
+export interface WinGetVersionSingleResponse {
+  Data: WinGetVersionSchema;
 }
 
 /**
  * Internal version manifest representation (used by packageManifests endpoint)
  */
-export interface VersionManifest {
+export interface WinGetVersionManifest {
   PackageVersion: string;
   DefaultLocale?: string;
   Channel?: string | null;
@@ -97,8 +97,8 @@ export interface VersionManifest {
 /**
  * Multiple versions response (WinGet 1.9.0)
  */
-export interface VersionMultipleResponse {
-  Data: VersionSchema[];
+export interface WinGetVersionMultipleResponse {
+  Data: WinGetVersionSchema[];
   ContinuationToken?: string;
 }
 
@@ -107,7 +107,7 @@ export interface VersionMultipleResponse {
 /**
  * Locale Schema (WinGet 1.9.0)
  */
-export interface LocaleSchema {
+export interface WinGetLocaleSchema {
   PackageLocale: string;
   [key: string]: any;
 }
@@ -115,15 +115,15 @@ export interface LocaleSchema {
 /**
  * Single locale response (WinGet 1.9.0)
  */
-export interface LocaleSingleResponse {
-  Data: LocaleSchema;
+export interface WinGetLocaleSingleResponse {
+  Data: WinGetLocaleSchema;
 }
 
 /**
  * Multiple locales response (WinGet 1.9.0)
  */
-export interface LocaleMultipleResponse {
-  Data: LocaleSchema[];
+export interface WinGetLocaleMultipleResponse {
+  Data: WinGetLocaleSchema[];
   ContinuationToken?: string;
 }
 
@@ -132,22 +132,22 @@ export interface LocaleMultipleResponse {
 /**
  * Installer Schema (WinGet 1.9.0)
  */
-export interface InstallerSchema {
+export interface WinGetInstallerSchema {
   [key: string]: any;
 }
 
 /**
  * Single installer response (WinGet 1.9.0)
  */
-export interface InstallerSingleResponse {
-  Data: InstallerSchema;
+export interface WinGetInstallerSingleResponse {
+  Data: WinGetInstallerSchema;
 }
 
 /**
  * Multiple installers response (WinGet 1.9.0)
  */
-export interface InstallerMultipleResponse {
-  Data: InstallerSchema[];
+export interface WinGetInstallerMultipleResponse {
+  Data: WinGetInstallerSchema[];
   ContinuationToken?: string;
 }
 
@@ -166,7 +166,7 @@ export interface WinGetError {
 /**
  * Match type for search queries
  */
-export type MatchType =
+export type WinGetMatchType =
   | "Exact"
   | "CaseInsensitive"
   | "StartsWith"
@@ -178,7 +178,7 @@ export type MatchType =
 /**
  * Package match field for search
  */
-export type PackageMatchField =
+export type WinGetPackageMatchField =
   | "PackageIdentifier"
   | "PackageName"
   | "Moniker"
@@ -194,36 +194,36 @@ export type PackageMatchField =
 /**
  * Search request match
  */
-export interface SearchRequestMatch {
+export interface WinGetSearchRequestMatch {
   KeyWord?: string;
-  MatchType?: MatchType;
-  PackageMatchField?: PackageMatchField;
+  MatchType?: WinGetMatchType;
+  PackageMatchField?: WinGetPackageMatchField;
 }
 
 /**
  * Search request package match filter (Inclusions/Filters item)
  */
-export interface SearchRequestPackageMatchFilter {
-  PackageMatchField: PackageMatchField;
-  RequestMatch: SearchRequestMatch;
+export interface WinGetSearchRequestPackageMatchFilter {
+  PackageMatchField: WinGetPackageMatchField;
+  RequestMatch: WinGetSearchRequestMatch;
 }
 
 /**
  * Manifest search request
  */
-export interface ManifestSearchRequest {
+export interface WinGetManifestSearchRequest {
   MaximumResults?: number;
   FetchAllManifests?: boolean;
-  Query?: SearchRequestMatch;
-  Inclusions?: SearchRequestPackageMatchFilter[];
-  Filters?: SearchRequestPackageMatchFilter[];
+  Query?: WinGetSearchRequestMatch;
+  Inclusions?: WinGetSearchRequestPackageMatchFilter[];
+  Filters?: WinGetSearchRequestPackageMatchFilter[];
 }
 
 /**
  * Manifest search version response
  */
-export interface ManifestSearchVersionResponse {
-  PackageVersion: PackageVersion;
+export interface WinGetManifestSearchVersionResponse {
+  PackageVersion: WinGetPackageVersion;
   Channel?: string;
   PackageFamilyNames?: string[];
   ProductCodes?: string[];
@@ -234,11 +234,11 @@ export interface ManifestSearchVersionResponse {
 /**
  * Manifest search response
  */
-export interface ManifestSearchResponse {
-  PackageIdentifier: PackageIdentifier;
+export interface WinGetManifestSearchResponse {
+  PackageIdentifier: WinGetPackageIdentifier;
   PackageName: string;
   Publisher: string;
-  Versions: ManifestSearchVersionResponse[];
+  Versions: WinGetManifestSearchVersionResponse[];
   /** @internal fuzzy search score, removed before response */
   _fuzzyScore?: number;
 }
@@ -246,9 +246,9 @@ export interface ManifestSearchResponse {
 /**
  * Manifest search result
  */
-export interface ManifestSearchResult {
-  Data: ManifestSearchResponse[];
+export interface WinGetManifestSearchResult {
+  Data: WinGetManifestSearchResponse[];
   ContinuationToken?: string;
-  RequiredPackageMatchFields?: PackageMatchField[];
-  UnsupportedPackageMatchFields?: PackageMatchField[];
+  RequiredPackageMatchFields?: WinGetPackageMatchField[];
+  UnsupportedPackageMatchFields?: WinGetPackageMatchField[];
 }

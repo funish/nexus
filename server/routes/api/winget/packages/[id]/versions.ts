@@ -2,11 +2,22 @@ import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, getRouterParam } from "nitro/h3";
 
+import {
+  WINGET_DEFAULT_LOCALE,
+  WINGET_VERSIONS_PAGE_SIZE,
+} from "../../../../../utils/winget/constants";
 import { getIndexDb } from "../../../../../utils/winget/db";
-import { getPackageVersions } from "../../../../../utils/winget/index";
 import { constructManifestPath, fetchManifestContent } from "../../../../../utils/winget/manifest";
+import { getPackageVersions } from "../../../../../utils/winget/queries";
 import { createWinGetError } from "../../../../../utils/winget/response";
-import type { VersionMultipleResponse, VersionSchema } from "../../../../../utils/winget/types";
+import {
+  decodeContinuationToken,
+  encodeContinuationToken,
+} from "../../../../../utils/winget/token";
+import type {
+  WinGetVersionMultipleResponse,
+  WinGetVersionSchema,
+} from "../../../../../utils/winget/types";
 import { compareVersion } from "../../../../../utils/winget/version";
 
 defineRouteMeta({
@@ -93,8 +104,6 @@ defineRouteMeta({
   },
 });
 
-const PAGE_SIZE = 25;
-
 /**
  * GET /packages/{PackageIdentifier}/versions
  *
@@ -111,7 +120,7 @@ export default defineHandler(async (event) => {
   const continuationToken = query.ContinuationToken as string | undefined;
 
   const db = await getIndexDb(event);
-  const versions = await getPackageVersions(db, packageId);
+  const versions = getPackageVersions(db, packageId);
 
   if (versions.size === 0) {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
@@ -120,40 +129,33 @@ export default defineHandler(async (event) => {
   const sortedVersions = Array.from(versions).sort((a, b) => compareVersion(b, a));
 
   // Fetch DefaultLocale from the latest version's manifest (all versions usually share the same DefaultLocale)
-  let defaultLocale = "en-US";
+  let defaultLocale = WINGET_DEFAULT_LOCALE;
   if (sortedVersions.length > 0) {
     try {
       const mainPath = constructManifestPath(packageId, sortedVersions[0]!, "main");
       const content = await fetchManifestContent(mainPath);
-      defaultLocale = (parseYAML(content) as Record<string, any>).DefaultLocale || "en-US";
+      defaultLocale =
+        (parseYAML(content) as Record<string, any>).DefaultLocale || WINGET_DEFAULT_LOCALE;
     } catch {
       // Keep fallback
     }
   }
 
-  let startIndex = 0;
-  if (continuationToken) {
-    try {
-      startIndex = parseInt(Buffer.from(continuationToken, "base64").toString(), 10);
-    } catch {
-      startIndex = 0;
-    }
-  }
-
-  const endIndex = startIndex + PAGE_SIZE;
+  const startIndex = decodeContinuationToken(continuationToken);
+  const endIndex = startIndex + WINGET_VERSIONS_PAGE_SIZE;
   const paginatedVersions = sortedVersions.slice(startIndex, endIndex);
 
-  const versionData: VersionSchema[] = paginatedVersions.map((version) => ({
+  const versionData: WinGetVersionSchema[] = paginatedVersions.map((version) => ({
     PackageVersion: version,
     DefaultLocale: defaultLocale,
   }));
 
-  const response: VersionMultipleResponse = {
+  const response: WinGetVersionMultipleResponse = {
     Data: versionData,
   };
 
   if (endIndex < sortedVersions.length) {
-    response.ContinuationToken = Buffer.from(endIndex.toString()).toString("base64");
+    response.ContinuationToken = encodeContinuationToken(endIndex);
   }
 
   return response;

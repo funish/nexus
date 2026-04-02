@@ -8,8 +8,8 @@ import {
 } from "../../../../../../../utils/winget/manifest";
 import { createWinGetError } from "../../../../../../../utils/winget/response";
 import type {
-  InstallerMultipleResponse,
-  InstallerSchema,
+  WinGetInstallerMultipleResponse,
+  WinGetInstallerSchema,
 } from "../../../../../../../utils/winget/types";
 
 defineRouteMeta({
@@ -201,10 +201,10 @@ export default defineHandler(async (event) => {
     const content = await fetchManifestContent(installerManifestPath);
     const manifest = parseYAML(content) as Record<string, any>;
 
-    const allInstallers: InstallerSchema[] = [];
+    const allInstallers: WinGetInstallerSchema[] = [];
     if (manifest.Installers && Array.isArray(manifest.Installers)) {
       for (const installer of manifest.Installers) {
-        allInstallers.push({ ...manifest, ...installer } as InstallerSchema);
+        allInstallers.push({ ...manifest, ...installer } as WinGetInstallerSchema);
       }
     }
 
@@ -219,7 +219,7 @@ export default defineHandler(async (event) => {
 
     const paginatedInstallers = allInstallers.slice(startIndex, startIndex + 25);
 
-    const response: InstallerMultipleResponse = {
+    const response: WinGetInstallerMultipleResponse = {
       Data: paginatedInstallers,
     };
 

@@ -3,11 +3,11 @@ import { Database } from "bun:sqlite";
 import { distance } from "fastest-levenshtein";
 
 import type {
-  MatchType,
-  ManifestSearchResponse,
-  ManifestSearchVersionResponse,
-  PackageMatchField,
-  SearchRequestPackageMatchFilter,
+  WinGetMatchType,
+  WinGetManifestSearchResponse,
+  WinGetManifestSearchVersionResponse,
+  WinGetPackageMatchField,
+  WinGetSearchRequestPackageMatchFilter,
 } from "./types";
 import { compareVersion } from "./version";
 
@@ -16,7 +16,7 @@ import { compareVersion } from "./version";
 /**
  * Convert MatchType + keyword to SQL LIKE pattern
  */
-export function toSqlPattern(keyword: string, matchType: MatchType): string {
+export function toSqlPattern(keyword: string, matchType: WinGetMatchType): string {
   const kw = keyword.toLowerCase();
   switch (matchType) {
     case "Exact":
@@ -36,7 +36,7 @@ export function toSqlPattern(keyword: string, matchType: MatchType): string {
 /**
  * Get the SQL table/column for a PackageMatchField
  */
-export function getFieldTable(field: PackageMatchField): string | null {
+export function getFieldTable(field: WinGetPackageMatchField): string | null {
   switch (field) {
     case "PackageIdentifier":
       return "i.id";
@@ -69,7 +69,7 @@ export function getFieldTable(field: PackageMatchField): string | null {
  * Build EXISTS/NOT EXISTS subquery condition for map-table-based PackageMatchFields
  */
 export function buildSubqueryCondition(
-  field: PackageMatchField,
+  field: WinGetPackageMatchField,
   paramIdx: number,
   negate: boolean,
 ): string {
@@ -103,13 +103,13 @@ export function searchPackages(
   db: Database,
   options: {
     keyword?: string;
-    matchType?: MatchType;
+    matchType?: WinGetMatchType;
     maximumResults?: number;
     continuationToken?: string;
-    inclusions?: SearchRequestPackageMatchFilter[];
-    filters?: SearchRequestPackageMatchFilter[];
+    inclusions?: WinGetSearchRequestPackageMatchFilter[];
+    filters?: WinGetSearchRequestPackageMatchFilter[];
   },
-): { results: ManifestSearchResponse[]; hasMore: boolean } {
+): { results: WinGetManifestSearchResponse[]; hasMore: boolean } {
   const { keyword, matchType, maximumResults, continuationToken, inclusions, filters } = options;
   const isFuzzy = matchType === "Fuzzy" || matchType === "FuzzySubstring";
 
@@ -253,7 +253,7 @@ export function searchPackages(
   // Group by package id
   const packageMap = new Map<
     string,
-    { name: string; publisher: string; versions: ManifestSearchVersionResponse[] }
+    { name: string; publisher: string; versions: WinGetManifestSearchVersionResponse[] }
   >();
 
   for (const row of rows) {
@@ -282,7 +282,7 @@ export function searchPackages(
   }
 
   // Build response, sort versions descending per package
-  const results: ManifestSearchResponse[] = [];
+  const results: WinGetManifestSearchResponse[] = [];
   for (const [id, data] of packageMap.entries()) {
     data.versions.sort((a, b) => compareVersion(b.PackageVersion, a.PackageVersion));
     results.push({

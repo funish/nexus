@@ -1,13 +1,11 @@
-import { parseYAML } from "confbox";
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, getRouterParam } from "nitro/h3";
 import type { H3Event } from "nitro/h3";
 
 import { getIndexDb } from "../../../../utils/winget/db";
-import { getPackageVersions } from "../../../../utils/winget/index";
-import { getVersionManifests, fetchManifestContent } from "../../../../utils/winget/manifest";
+import { buildVersionManifest } from "../../../../utils/winget/manifest";
+import { getPackageVersions } from "../../../../utils/winget/queries";
 import { createWinGetError } from "../../../../utils/winget/response";
-import type { VersionManifest } from "../../../../utils/winget/types";
 import { compareVersion } from "../../../../utils/winget/version";
 
 defineRouteMeta({
@@ -135,7 +133,7 @@ export default defineHandler(async (event: H3Event) => {
   }
 
   const db = await getIndexDb(event);
-  let versions = await getPackageVersions(db, packageId);
+  let versions = getPackageVersions(db, packageId);
 
   if (versions.size === 0) {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
@@ -154,62 +152,20 @@ export default defineHandler(async (event: H3Event) => {
   }
 
   const sortedVersions = Array.from(versions).sort((a, b) => compareVersion(b, a));
-  const manifestVersions: VersionManifest[] = [];
 
-  await Promise.allSettled(
-    sortedVersions.map(async (version) => {
-      const manifestFiles = await getVersionManifests(packageId, version);
-      if (manifestFiles.length === 0) return;
+  // Build manifests for all versions in parallel
+  const manifestResults = await Promise.allSettled(
+    sortedVersions.map((version) => buildVersionManifest(packageId, version)),
+  );
 
-      // Fetch all manifest files in parallel
-      const fetched = await Promise.allSettled(
-        manifestFiles.map(async (manifestPath) => {
-          const content = await fetchManifestContent(manifestPath);
-          return {
-            filename: manifestPath.split("/").pop()!,
-            manifest: parseYAML(content) as Record<string, any>,
-          };
-        }),
-      );
+  const manifestVersions = manifestResults
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null)
+    .map((r) => r.value)
+    .filter((versionEntry) => {
+      // Apply channel filter
+      if (filterChannel && versionEntry.Channel !== filterChannel) return false;
 
-      const versionEntry: VersionManifest = { PackageVersion: version };
-
-      for (const result of fetched) {
-        if (result.status !== "fulfilled") continue;
-        const { filename, manifest } = result.value;
-
-        if (filename === `${packageId}.yaml`) {
-          versionEntry.DefaultLocale = manifest.DefaultLocale;
-          versionEntry.Channel = manifest.Channel;
-          const hasLocaleData = Boolean(
-            manifest.PackageLocale || manifest.Publisher || manifest.PackageName,
-          );
-          const dl = manifest.DefaultLocale || manifest.PackageLocale;
-          const hasDefaultLocaleFile = dl
-            ? manifestFiles.some((p) => p.includes(`.locale.${dl}.yaml`))
-            : false;
-          if (hasLocaleData && !hasDefaultLocaleFile) {
-            if (!versionEntry.Locales) versionEntry.Locales = [];
-            versionEntry.Locales.unshift({
-              PackageLocale: dl || manifest.PackageLocale,
-              ...manifest,
-            } as Record<string, any>);
-          }
-        } else if (filename.match(/\.installer\.yaml$/)) {
-          if (manifest.Installers && Array.isArray(manifest.Installers)) {
-            versionEntry.Installers = manifest.Installers.map((inst: Record<string, any>) => ({
-              ...manifest,
-              ...inst,
-            }));
-          }
-        } else if (filename.match(/\.locale\.([^.]+)\.yaml$/)) {
-          if (!versionEntry.Locales) versionEntry.Locales = [];
-          versionEntry.Locales.push(manifest);
-        }
-      }
-
-      if (filterChannel && versionEntry.Channel !== filterChannel) return;
-
+      // Apply market filter
       if (filterMarket && versionEntry.Installers) {
         const hasMatchingInstaller = versionEntry.Installers.some((installer: any) => {
           const markets = installer.Markets;
@@ -219,12 +175,11 @@ export default defineHandler(async (event: H3Event) => {
           if (markets.AllowedMarkets) return false;
           return true;
         });
-        if (!hasMatchingInstaller) return;
+        if (!hasMatchingInstaller) return false;
       }
 
-      manifestVersions.push(versionEntry);
-    }),
-  );
+      return true;
+    });
 
   return {
     Data: {

@@ -8,8 +8,8 @@ import {
 } from "../../../../../../../../utils/winget/manifest";
 import { createWinGetError } from "../../../../../../../../utils/winget/response";
 import type {
-  LocaleSingleResponse,
-  LocaleSchema,
+  WinGetLocaleSingleResponse,
+  WinGetLocaleSchema,
 } from "../../../../../../../../utils/winget/types";
 
 defineRouteMeta({
@@ -157,8 +157,8 @@ export default defineHandler(async (event) => {
     const content = await fetchManifestContent(localeManifestPath);
     const manifest = parseYAML(content) as Record<string, any>;
 
-    const response: LocaleSingleResponse = {
-      Data: { PackageLocale: locale, ...manifest } as LocaleSchema,
+    const response: WinGetLocaleSingleResponse = {
+      Data: { PackageLocale: locale, ...manifest } as WinGetLocaleSchema,
     };
 
     return response;

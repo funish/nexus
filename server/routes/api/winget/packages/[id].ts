@@ -2,9 +2,9 @@ import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 
 import { getIndexDb } from "../../../../utils/winget/db";
-import { packageExists } from "../../../../utils/winget/index";
+import { packageExists } from "../../../../utils/winget/queries";
 import { createWinGetError } from "../../../../utils/winget/response";
-import type { PackageSingleResponse } from "../../../../utils/winget/types";
+import type { WinGetPackageSingleResponse } from "../../../../utils/winget/types";
 
 defineRouteMeta({
   openAPI: {
@@ -91,11 +91,11 @@ export default defineHandler(async (event) => {
 
   const db = await getIndexDb(event);
 
-  if (!(await packageExists(db, packageId))) {
+  if (!packageExists(db, packageId)) {
     return createWinGetError(event, 404, `Package '${packageId}' not found`);
   }
 
-  const response: PackageSingleResponse = {
+  const response: WinGetPackageSingleResponse = {
     Data: {
       PackageIdentifier: packageId,
     },

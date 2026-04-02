@@ -8,8 +8,8 @@ import {
 } from "../../../../../../../../utils/winget/manifest";
 import { createWinGetError } from "../../../../../../../../utils/winget/response";
 import type {
-  InstallerSingleResponse,
-  InstallerSchema,
+  WinGetInstallerSingleResponse,
+  WinGetInstallerSchema,
 } from "../../../../../../../../utils/winget/types";
 
 defineRouteMeta({
@@ -210,8 +210,8 @@ export default defineHandler(async (event) => {
       return createWinGetError(event, 404, `Installer '${installerId}' not found`);
     }
 
-    const response: InstallerSingleResponse = {
-      Data: { ...manifest, ...installer } as InstallerSchema,
+    const response: WinGetInstallerSingleResponse = {
+      Data: { ...manifest, ...installer } as WinGetInstallerSchema,
     };
 
     return response;

@@ -1,15 +1,19 @@
+import { parseYAML } from "confbox";
+
 import { cacheStorage } from "../storage";
-import { GITHUB_RAW_BASE, CACHE_PREFIX } from "./constants";
+import { WINGET_GITHUB_RAW_BASE, WINGET_CACHE_PREFIX } from "./constants";
 import { getLetterDirectoryShas, getGitHubTreePaths } from "./tree";
-import type { PackageIdentifier, PackageVersion } from "./types";
+import type { WinGetPackageIdentifier, WinGetPackageVersion, WinGetVersionManifest } from "./types";
+
+// ---- Path construction ----
 
 /**
  * Construct the GitHub raw path for a manifest file without tree API discovery.
  * Follows the standard WinGet community manifests naming convention.
  */
 export function constructManifestPath(
-  packageId: PackageIdentifier,
-  version: PackageVersion,
+  packageId: WinGetPackageIdentifier,
+  version: WinGetPackageVersion,
   type: "main" | "installer" | "locale",
   locale?: string,
 ): string {
@@ -35,8 +39,10 @@ export function constructManifestPath(
 }
 
 export function getManifestCacheKey(manifestPath: string): string {
-  return `${CACHE_PREFIX}/files/${manifestPath}`;
+  return `${WINGET_CACHE_PREFIX}/files/${manifestPath}`;
 }
+
+// ---- Manifest content fetching ----
 
 /**
  * Fetch manifest file content from GitHub raw URL with caching.
@@ -45,14 +51,12 @@ export function getManifestCacheKey(manifestPath: string): string {
 export async function fetchManifestContent(manifestPath: string): Promise<string> {
   const cacheKey = getManifestCacheKey(manifestPath);
 
-  // Try cache
   const cached = await cacheStorage.getItem(cacheKey);
   if (cached && typeof cached === "string") {
     return cached;
   }
 
-  // Cache miss — fetch from GitHub
-  const rawUrl = `${GITHUB_RAW_BASE}/${manifestPath}`;
+  const rawUrl = `${WINGET_GITHUB_RAW_BASE}/${manifestPath}`;
   const response = await fetch(rawUrl);
 
   if (!response.ok) {
@@ -60,58 +64,21 @@ export async function fetchManifestContent(manifestPath: string): Promise<string
   }
 
   const content = await response.text();
-
-  // Store in cache
   await cacheStorage.setItem(cacheKey, content);
 
   return content;
 }
 
+// ---- Shared letter/paths lookup ----
+
 /**
- * Get ALL manifest file paths for a specific version.
- * Uses cached GitHub tree paths to discover files dynamically.
+ * Resolve the letter directory and tree paths for a package identifier.
  *
- * Returns full paths like:
- *   manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.yaml
- *   manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.installer.yaml
- *   manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.locale.en-US.yaml
- *   manifests/m/Microsoft/VisualStudioCode/1.95.0/Microsoft.VisualStudioCode.locale.zh-CN.yaml
+ * Shared by `getVersionManifests` and `getPackageLetterPaths` to avoid
+ * duplicating the split → letter → SHA → tree-paths chain.
  */
-export async function getVersionManifests(
-  packageId: PackageIdentifier,
-  version: PackageVersion,
-): Promise<string[]> {
-  const parts = packageId.split(".");
-  if (parts.length < 2) return [];
-
-  const publisher = parts[0];
-  const name = parts.slice(1).join("/");
-  if (!publisher || !name) return [];
-
-  const firstChar = publisher[0];
-  if (!firstChar) return [];
-
-  const letter = firstChar.toLowerCase();
-
-  // Get letter directory paths from cache
-  const letterShas = await getLetterDirectoryShas();
-  const sha = letterShas.get(letter);
-  if (!sha) return [];
-
-  const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
-  const pathPrefix = `${publisher}/${name}/${version}/`;
-
-  return paths
-    .filter((path) => path.startsWith(pathPrefix) && path.endsWith(".yaml"))
-    .map((path) => `manifests/${letter}/${path}`);
-}
-
-/**
- * Get the letter and tree paths for a specific package.
- * Convenience function used by multiple modules.
- */
-export async function getPackageLetterPaths(
-  packageId: PackageIdentifier,
+async function getLetterPaths(
+  packageId: WinGetPackageIdentifier,
 ): Promise<{ letter: string; paths: string[] } | null> {
   const parts = packageId.split(".");
   if (parts.length < 2) return null;
@@ -126,4 +93,100 @@ export async function getPackageLetterPaths(
 
   const paths = await getGitHubTreePaths(sha, `manifests/${letter}`);
   return { letter, paths };
+}
+
+/**
+ * Get ALL manifest file paths for a specific version.
+ * Uses cached GitHub tree paths to discover files dynamically.
+ */
+export async function getVersionManifests(
+  packageId: WinGetPackageIdentifier,
+  version: WinGetPackageVersion,
+): Promise<string[]> {
+  const result = await getLetterPaths(packageId);
+  if (!result) return [];
+
+  const parts = packageId.split(".");
+  const publisher = parts[0];
+  const name = parts.slice(1).join("/");
+  if (!publisher || !name) return [];
+
+  const pathPrefix = `${publisher}/${name}/${version}/`;
+
+  return result.paths
+    .filter((path) => path.startsWith(pathPrefix) && path.endsWith(".yaml"))
+    .map((path) => `manifests/${result.letter}/${path}`);
+}
+
+/**
+ * Get the letter and tree paths for a specific package.
+ */
+export async function getPackageLetterPaths(
+  packageId: WinGetPackageIdentifier,
+): Promise<{ letter: string; paths: string[] } | null> {
+  return getLetterPaths(packageId);
+}
+
+// ---- Version manifest building ----
+
+/**
+ * Build a WinGetVersionManifest by fetching and merging all manifest files
+ * (main, installer, locale) for a given package version.
+ */
+export async function buildVersionManifest(
+  packageId: WinGetPackageIdentifier,
+  version: WinGetPackageVersion,
+): Promise<WinGetVersionManifest | null> {
+  const manifestFiles = await getVersionManifests(packageId, version);
+  if (manifestFiles.length === 0) return null;
+
+  // Fetch all manifest files in parallel
+  const fetched = await Promise.allSettled(
+    manifestFiles.map(async (manifestPath) => {
+      const content = await fetchManifestContent(manifestPath);
+      return {
+        filename: manifestPath.split("/").pop()!,
+        manifest: parseYAML(content) as Record<string, any>,
+      };
+    }),
+  );
+
+  const versionEntry: WinGetVersionManifest = { PackageVersion: version };
+
+  for (const result of fetched) {
+    if (result.status !== "fulfilled") continue;
+    const { filename, manifest } = result.value;
+
+    if (filename === `${packageId}.yaml`) {
+      versionEntry.DefaultLocale = manifest.DefaultLocale;
+      versionEntry.Channel = manifest.Channel;
+      // Inline locale data when no dedicated locale file exists
+      const hasLocaleData = Boolean(
+        manifest.PackageLocale || manifest.Publisher || manifest.PackageName,
+      );
+      const defaultLocale = manifest.DefaultLocale || manifest.PackageLocale;
+      const hasDefaultLocaleFile = defaultLocale
+        ? manifestFiles.some((p) => p.includes(`.locale.${defaultLocale}.yaml`))
+        : false;
+      if (hasLocaleData && !hasDefaultLocaleFile) {
+        if (!versionEntry.Locales) versionEntry.Locales = [];
+        versionEntry.Locales.unshift({
+          PackageLocale: defaultLocale || manifest.PackageLocale,
+          ...manifest,
+        } as Record<string, any>);
+      }
+    } else if (filename.endsWith(".installer.yaml")) {
+      if (manifest.Installers && Array.isArray(manifest.Installers)) {
+        versionEntry.Installers = manifest.Installers.map((inst: Record<string, any>) => ({
+          ...manifest,
+          ...inst,
+        }));
+      }
+    } else if (/\.locale\.[^.]+\.yaml$/.test(filename)) {
+      if (!versionEntry.Locales) versionEntry.Locales = [];
+      versionEntry.Locales.push(manifest);
+    }
+  }
+
+  return versionEntry;
 }

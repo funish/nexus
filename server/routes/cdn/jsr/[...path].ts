@@ -5,13 +5,15 @@ import semver from "semver";
 import {
   type CdnFile,
   type CdnPackageListing,
-  JSR_REGISTRY_URL,
+  CDN_CACHE_SHORT,
+  CDN_JSR_REGISTRY,
   getCacheControl,
   getContentType,
   getDirectoryListing,
   isPackageCached,
   cachePackageFromTarball,
   extractFileFromTarball,
+  resolveRegistryVersion,
 } from "../../../utils/cdn";
 import { cacheStorage } from "../../../utils/storage";
 
@@ -82,7 +84,7 @@ export default defineHandler(async (event) => {
   // Fetch package metadata from npm.jsr.io
   // JSR uses npm compatibility name: @scope/package -> @jsr/scope__package
   const npmCompatName = `@jsr/${scope}__${pkg}`;
-  const metadataRes = await fetch(`${JSR_REGISTRY_URL}/${npmCompatName}`);
+  const metadataRes = await fetch(`${CDN_JSR_REGISTRY}/${npmCompatName}`);
   if (!metadataRes.ok) {
     throw new HTTPError({
       status: 404,
@@ -91,47 +93,22 @@ export default defineHandler(async (event) => {
   }
 
   const metadata = await metadataRes.json();
-  const distTags = metadata["dist-tags"];
 
-  // Try to get specified version, fallback to latest if not found
-  let versionInfo = metadata.versions[version];
-
-  // If exact version not found, try to resolve version range (e.g., "1", "1.1", "^1.1.0")
-  if (!versionInfo) {
-    const allVersions = Object.keys(metadata.versions);
-
-    // Try semver range matching
-    const matchedVersion = semver.maxSatisfying(allVersions, version);
-    if (matchedVersion) {
-      version = matchedVersion;
-      versionInfo = metadata.versions[version];
-    }
+  // Resolve version: exact → semver range → latest dist-tag
+  const resolved = resolveRegistryVersion(metadata, version);
+  if (!resolved) {
+    throw new HTTPError({ status: 404, statusText: "Version not found" });
   }
-
-  // Fallback to latest if still not found
-  if (!versionInfo && distTags?.latest) {
-    const latest = distTags.latest;
-    if (latest) {
-      versionInfo = metadata.versions[latest];
-      version = latest;
-    }
-  }
-
-  if (!versionInfo) {
-    throw new HTTPError({
-      status: 404,
-      statusText: "Version not found",
-    });
-  }
+  const { version: resolvedVersion, versionInfo } = resolved;
 
   // Download tarball info
   const tarballUrl = versionInfo.dist.tarball;
 
   const storage = cacheStorage;
-  const cacheBase = `cdn/jsr/${packageName}/${version}`;
+  const cacheBase = `cdn/jsr/${packageName}/${resolvedVersion}`;
 
   // Check if entire package is already cached
-  const cacheable = semver.valid(version) !== null;
+  const cacheable = semver.valid(resolvedVersion) !== null;
   const isCached = await isPackageCached(cacheBase, cacheable);
 
   // Read package.json to get exports field for entry file
@@ -168,7 +145,12 @@ export default defineHandler(async (event) => {
   // Trigger background caching for entire package (if not already cached)
   if (!isCached) {
     event.waitUntil(
-      cachePackageFromTarball(tarballUrl, cacheBase, undefined, `jsr:${packageName}@${version}`),
+      cachePackageFromTarball(
+        tarballUrl,
+        cacheBase,
+        undefined,
+        `jsr:${packageName}@${resolvedVersion}`,
+      ),
     );
   }
 
@@ -182,7 +164,7 @@ export default defineHandler(async (event) => {
           tarballUrl,
           cacheBase,
           undefined,
-          `jsr:${packageName}@${version}`,
+          `jsr:${packageName}@${resolvedVersion}`,
         );
       }
 
@@ -190,11 +172,11 @@ export default defineHandler(async (event) => {
       const fileList = (meta?.files || []) as Array<CdnFile>;
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", "public, max-age=600");
+      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
 
       const response: CdnPackageListing = {
         name: metadata.name,
-        version: version,
+        version: resolvedVersion,
         path: "",
         files: fileList,
       };
@@ -217,7 +199,7 @@ export default defineHandler(async (event) => {
 
       const contentType = getContentType(entryFile);
       event.res.headers.set("Content-Type", contentType);
-      event.res.headers.set("Cache-Control", getCacheControl(version));
+      event.res.headers.set("Cache-Control", getCacheControl(resolvedVersion));
 
       return Buffer.from(fileData);
     }
@@ -229,7 +211,7 @@ export default defineHandler(async (event) => {
 
     const contentType = getContentType(filepath);
     event.res.headers.set("Content-Type", contentType);
-    event.res.headers.set("Cache-Control", getCacheControl(version));
+    event.res.headers.set("Cache-Control", getCacheControl(resolvedVersion));
 
     return Buffer.from(fileData);
   } catch (error) {
@@ -242,7 +224,12 @@ export default defineHandler(async (event) => {
         });
       }
 
-      const listing = await getDirectoryListing(cacheBase, filepath, metadata.name, version);
+      const listing = await getDirectoryListing(
+        cacheBase,
+        filepath,
+        metadata.name,
+        resolvedVersion,
+      );
       if (!listing) {
         throw new HTTPError({
           status: 404,
@@ -251,7 +238,7 @@ export default defineHandler(async (event) => {
       }
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", "public, max-age=600");
+      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
 
       return listing;
     }

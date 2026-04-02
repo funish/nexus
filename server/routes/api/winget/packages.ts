@@ -1,8 +1,10 @@
 import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery } from "nitro/h3";
 
-import { buildPackageIndex } from "../../../utils/winget/index";
-import type { PackageMultipleResponse } from "../../../utils/winget/types";
+import { WINGET_PACKAGES_PAGE_SIZE } from "../../../utils/winget/constants";
+import { getPackageIndex } from "../../../utils/winget/queries";
+import { decodeContinuationToken, encodeContinuationToken } from "../../../utils/winget/token";
+import type { WinGetPackageMultipleResponse } from "../../../utils/winget/types";
 
 defineRouteMeta({
   openAPI: {
@@ -87,30 +89,19 @@ export default defineHandler(async (event) => {
   const query = getQuery(event);
   const continuationToken = query.ContinuationToken as string | undefined;
 
-  const packageIndex = await buildPackageIndex(event);
-
+  const packageIndex = await getPackageIndex(event);
   const packages = Array.from(packageIndex.keys()).sort();
 
-  const pageSize = 100;
-  let startIndex = 0;
-
-  if (continuationToken) {
-    try {
-      startIndex = parseInt(Buffer.from(continuationToken, "base64").toString(), 10);
-    } catch {
-      startIndex = 0;
-    }
-  }
-
-  const endIndex = startIndex + pageSize;
+  const startIndex = decodeContinuationToken(continuationToken);
+  const endIndex = startIndex + WINGET_PACKAGES_PAGE_SIZE;
   const paginatedPackages = packages.slice(startIndex, endIndex);
 
-  const response: PackageMultipleResponse = {
+  const response: WinGetPackageMultipleResponse = {
     Data: paginatedPackages.map((id) => ({ PackageIdentifier: id })),
   };
 
   if (endIndex < packages.length) {
-    response.ContinuationToken = Buffer.from(endIndex.toString()).toString("base64");
+    response.ContinuationToken = encodeContinuationToken(endIndex);
   }
   return response;
 });

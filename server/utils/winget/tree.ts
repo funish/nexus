@@ -2,14 +2,14 @@ import { env } from "std-env";
 
 import { cacheStorage } from "../storage";
 import {
-  CACHE_PREFIX,
-  GITHUB_API_BASE,
-  GITHUB_BRANCH,
-  GITHUB_REPO,
-  MANIFESTS_SHA_KEY,
-  UPDATE_INTERVAL,
+  WINGET_CACHE_PREFIX,
+  WINGET_GITHUB_API_BASE,
+  WINGET_GITHUB_BRANCH,
+  WINGET_GITHUB_REPO,
+  WINGET_MANIFESTS_SHA_KEY,
+  WINGET_UPDATE_INTERVAL,
 } from "./constants";
-import type { GitHubTreeResponse } from "./types";
+import type { WinGetGitHubTreeResponse } from "./types";
 
 /**
  * Get GitHub authentication headers if token is available
@@ -32,10 +32,10 @@ export function getGitHubHeaders(): HeadersInit {
  * Fetch GitHub tree data by SHA or branch
  */
 export async function getGitHubTree(
-  treeSha: string = GITHUB_BRANCH,
+  treeSha: string = WINGET_GITHUB_BRANCH,
   recursive: boolean = false,
-): Promise<GitHubTreeResponse> {
-  const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
+): Promise<WinGetGitHubTreeResponse> {
+  const url = `${WINGET_GITHUB_API_BASE}/repos/${WINGET_GITHUB_REPO}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
   const response = await fetch(url, {
     headers: getGitHubHeaders(),
   });
@@ -44,7 +44,7 @@ export async function getGitHubTree(
     throw new Error(`Failed to fetch GitHub tree: ${response.statusText}`);
   }
 
-  return (await response.json()) as GitHubTreeResponse;
+  return (await response.json()) as WinGetGitHubTreeResponse;
 }
 
 /**
@@ -55,7 +55,7 @@ export async function getGitHubTree(
  */
 export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): Promise<string[]> {
   const normalizedSuffix = cacheSuffix.replace(/\//g, "-");
-  const cacheKey = `${CACHE_PREFIX}/${normalizedSuffix}`;
+  const cacheKey = `${WINGET_CACHE_PREFIX}/${normalizedSuffix}`;
 
   // Check cache metadata
   const meta = await cacheStorage.getMeta(cacheKey);
@@ -63,7 +63,7 @@ export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): 
 
   if (meta?.mtime) {
     const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < UPDATE_INTERVAL) {
+    if (cacheAge < WINGET_UPDATE_INTERVAL) {
       const cached = await cacheStorage.getItem(cacheKey);
       if (cached && Array.isArray(cached)) {
         return cached as string[];
@@ -89,13 +89,13 @@ export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): 
  */
 export async function getManifestsSha(): Promise<string> {
   // Check cache metadata
-  const meta = await cacheStorage.getMeta(MANIFESTS_SHA_KEY);
+  const meta = await cacheStorage.getMeta(WINGET_MANIFESTS_SHA_KEY);
   const now = new Date();
 
   if (meta?.mtime) {
     const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < UPDATE_INTERVAL) {
-      const cached = await cacheStorage.getItem(MANIFESTS_SHA_KEY);
+    if (cacheAge < WINGET_UPDATE_INTERVAL) {
+      const cached = await cacheStorage.getItem(WINGET_MANIFESTS_SHA_KEY);
       if (cached && typeof cached === "string") {
         return cached;
       }
@@ -103,7 +103,7 @@ export async function getManifestsSha(): Promise<string> {
   }
 
   // Fetch root tree
-  const rootTree = await getGitHubTree(GITHUB_BRANCH, false);
+  const rootTree = await getGitHubTree(WINGET_GITHUB_BRANCH, false);
   const manifestsItem = rootTree.tree.find(
     (item) => item.path === "manifests" && item.type === "tree",
   );
@@ -113,8 +113,8 @@ export async function getManifestsSha(): Promise<string> {
   }
 
   // Cache the SHA
-  await cacheStorage.setItem(MANIFESTS_SHA_KEY, manifestsItem.sha);
-  await cacheStorage.setMeta(MANIFESTS_SHA_KEY, { mtime: new Date() });
+  await cacheStorage.setItem(WINGET_MANIFESTS_SHA_KEY, manifestsItem.sha);
+  await cacheStorage.setMeta(WINGET_MANIFESTS_SHA_KEY, { mtime: new Date() });
 
   return manifestsItem.sha;
 }
@@ -123,7 +123,7 @@ export async function getManifestsSha(): Promise<string> {
  * Get all letter directory SHAs from manifests (a-z, 0-9)
  */
 export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
-  const cacheKey = `${CACHE_PREFIX}/letter-shas`;
+  const cacheKey = `${WINGET_CACHE_PREFIX}/letter-shas`;
 
   // Check cache
   const meta = await cacheStorage.getMeta(cacheKey);
@@ -131,7 +131,7 @@ export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
 
   if (meta?.mtime) {
     const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < UPDATE_INTERVAL) {
+    if (cacheAge < WINGET_UPDATE_INTERVAL) {
       const cached = await cacheStorage.getItem(cacheKey);
       if (cached) {
         return new Map(Object.entries(cached as Record<string, string>));

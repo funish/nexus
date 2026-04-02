@@ -1,13 +1,22 @@
-export type { CdnFile, CdnDirectoryListing, CdnPackageListing, CdnOrgListing } from "./types";
+export type {
+  CdnFile,
+  CdnDirectoryListing,
+  CdnPackageListing,
+  CdnOrgListing,
+  CdnRegistryMetadata,
+  CdnResolvedVersion,
+  CdnRootDirOptions,
+  CdnEsmBundleOptions,
+} from "./types";
 export {
-  TARBALL_DOWNLOAD_TIMEOUT,
-  CACHE_CONTROL_SHORT,
-  CACHE_CONTROL_LONG,
-  MAX_UNPACKED_SIZE,
-  NPM_REGISTRY_URL,
-  JSR_REGISTRY_URL,
+  CDN_FETCH_TIMEOUT,
+  CDN_CACHE_SHORT,
+  CDN_CACHE_LONG,
+  CDN_MAX_PACKAGE_SIZE,
+  CDN_NPM_REGISTRY,
+  CDN_JSR_REGISTRY,
 } from "./constants";
-export { getCacheControl } from "./semver";
+export { getCacheControl } from "./cache";
 export {
   detectRootDir,
   downloadTarball,
@@ -15,9 +24,8 @@ export {
   isPackageCached,
   cachePackageFromTarball,
 } from "./tarball";
-export type { RootDirOptions } from "./tarball";
 export { getDirectoryListing } from "./listing";
 export { calculateIntegrity } from "./integrity";
 export { getContentType } from "./mime";
-export { bundleNpmPackage } from "./esm";
-export type { BundleOptions } from "./esm";
+export { bundleEsmPackage } from "./esm";
+export { resolveRegistryVersion } from "./resolve";

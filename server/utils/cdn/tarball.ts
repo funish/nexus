@@ -1,36 +1,17 @@
 import { HTTPError } from "nitro/h3";
 
 import { cacheStorage } from "../storage";
-import { MAX_UNPACKED_SIZE, SKIP_TTL_MS, TARBALL_DOWNLOAD_TIMEOUT } from "./constants";
+import { CDN_FETCH_TIMEOUT, CDN_MAX_PACKAGE_SIZE, CDN_SKIP_TTL } from "./constants";
 import { calculateIntegrity } from "./integrity";
-import type { CdnFile } from "./types";
+import type { CdnFile, CdnRootDirOptions } from "./types";
 
 // Concurrency guard: prevent duplicate tarball downloads for the same cacheBase
 const pendingTarballs = new Set<string>();
 
 /**
- * Options for tarball root directory detection.
- */
-export interface RootDirOptions {
-  /**
-   * If true, skip entries starting with 'pax_global_header' when finding
-   * the root directory. Needed for GitHub tarballs which include
-   * Pax header entries.
-   * Default: false
-   */
-  skipPaxHeaders?: boolean;
-
-  /**
-   * Fallback directory name if root cannot be detected from tarball entries.
-   * Default: "package"
-   */
-  fallbackName?: string;
-}
-
-/**
  * Detect the root directory name inside a tarball's file map.
  */
-export function detectRootDir(filesMap: Map<string, File>, options?: RootDirOptions): string {
+export function detectRootDir(filesMap: Map<string, File>, options?: CdnRootDirOptions): string {
   const keys = [...filesMap.keys()];
   let firstPath: string | undefined;
 
@@ -54,7 +35,7 @@ export async function downloadTarball(
 ): Promise<Uint8Array> {
   let tarballRes: Response;
   try {
-    tarballRes = await fetch(tarballUrl, { signal: AbortSignal.timeout(TARBALL_DOWNLOAD_TIMEOUT) });
+    tarballRes = await fetch(tarballUrl, { signal: AbortSignal.timeout(CDN_FETCH_TIMEOUT) });
   } catch (error) {
     if ((error as Error).name === "AbortError") {
       throw new HTTPError({
@@ -78,7 +59,7 @@ export async function downloadTarball(
  */
 async function tryFetchWithTimeout(url: string): Promise<Uint8Array | undefined> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(TARBALL_DOWNLOAD_TIMEOUT) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(CDN_FETCH_TIMEOUT) });
     if (res.ok) {
       return res.bytes();
     }
@@ -98,7 +79,7 @@ export async function extractFileFromTarball(
   tarballUrl: string,
   filepath: string,
   cacheKey: string,
-  rootDirOptions?: RootDirOptions,
+  rootDirOptions?: CdnRootDirOptions,
   directUrl?: string,
 ): Promise<Uint8Array> {
   const storage = cacheStorage;
@@ -170,7 +151,7 @@ export async function extractFileFromTarball(
  */
 async function detectRootDirFromArchive(
   archive: Bun.Archive,
-  options?: RootDirOptions,
+  options?: CdnRootDirOptions,
 ): Promise<string> {
   const filesMap = await archive.files();
   return detectRootDir(filesMap, options);
@@ -196,7 +177,7 @@ export async function isPackageCached(
 export async function cachePackageFromTarball(
   tarballUrl: string,
   cacheBase: string,
-  rootDirOptions?: RootDirOptions,
+  rootDirOptions?: CdnRootDirOptions,
   logLabel?: string,
 ): Promise<void> {
   const storage = cacheStorage;
@@ -204,7 +185,7 @@ export async function cachePackageFromTarball(
   // Check if already cached with file list, or still within skip TTL
   const cachedMeta = await storage.getMeta(cacheBase);
   if (cachedMeta?.files) return;
-  if (cachedMeta?.skippedAt && Date.now() - Number(cachedMeta.skippedAt) < SKIP_TTL_MS) return;
+  if (cachedMeta?.skippedAt && Date.now() - Number(cachedMeta.skippedAt) < CDN_SKIP_TTL) return;
 
   // Skip if another call is already downloading this tarball
   if (pendingTarballs.has(cacheBase)) return;
@@ -213,7 +194,7 @@ export async function cachePackageFromTarball(
   try {
     // Download and extract tarball
     const tarballRes = await fetch(tarballUrl, {
-      signal: AbortSignal.timeout(TARBALL_DOWNLOAD_TIMEOUT),
+      signal: AbortSignal.timeout(CDN_FETCH_TIMEOUT),
     });
     if (!tarballRes.ok) {
       console.error(`Failed to download tarball for ${logLabel || cacheBase}`);
@@ -239,12 +220,18 @@ export async function cachePackageFromTarball(
 
     // Skip packages that exceed size limit
     const totalSize = fileList.reduce((sum, f) => sum + f.size, 0);
-    if (totalSize > MAX_UNPACKED_SIZE) {
+    if (totalSize > CDN_MAX_PACKAGE_SIZE) {
       console.warn(
-        `Skipping ${logLabel || cacheBase}: unpacked size ${(totalSize / 1024 / 1024).toFixed(1)} MB exceeds ${MAX_UNPACKED_SIZE / 1024 / 1024} MB limit`,
+        `Skipping ${logLabel || cacheBase}: unpacked size ${(totalSize / 1024 / 1024).toFixed(1)} MB exceeds ${CDN_MAX_PACKAGE_SIZE / 1024 / 1024} MB limit`,
       );
       await storage.setMeta(cacheBase, { skippedAt: Date.now() });
       return;
+    }
+
+    // Build a name → index lookup to avoid O(n) find per file
+    const fileIndex = new Map<string, number>();
+    for (let i = 0; i < fileList.length; i++) {
+      fileIndex.set(fileList[i]!.name, i);
     }
 
     // Concurrent caching using Promise.allSettled
@@ -261,9 +248,9 @@ export async function cachePackageFromTarball(
 
         // Calculate SHA-256 integrity for SRI
         const integrity = calculateIntegrity(fileData);
-        const fileItem = fileList.find((f) => f.name === relativePath);
-        if (fileItem) {
-          fileItem.integrity = integrity;
+        const idx = fileIndex.get(relativePath);
+        if (idx !== undefined) {
+          fileList[idx]!.integrity = integrity;
         }
       } catch (error) {
         console.error(`Failed to cache file ${relativePath}:`, error);

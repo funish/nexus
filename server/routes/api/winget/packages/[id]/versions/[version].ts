@@ -3,13 +3,16 @@ import { defineRouteMeta } from "nitro";
 import { defineHandler, getRouterParam } from "nitro/h3";
 
 import { getIndexDb } from "../../../../../../utils/winget/db";
-import { getPackageVersions } from "../../../../../../utils/winget/index";
 import {
   constructManifestPath,
   fetchManifestContent,
 } from "../../../../../../utils/winget/manifest";
+import { getPackageVersions } from "../../../../../../utils/winget/queries";
 import { createWinGetError } from "../../../../../../utils/winget/response";
-import type { VersionSingleResponse, VersionSchema } from "../../../../../../utils/winget/types";
+import type {
+  WinGetVersionSingleResponse,
+  WinGetVersionSchema,
+} from "../../../../../../utils/winget/types";
 
 defineRouteMeta({
   openAPI: {
@@ -105,7 +108,7 @@ export default defineHandler(async (event) => {
   }
 
   const db = await getIndexDb(event);
-  const versions = await getPackageVersions(db, packageId);
+  const versions = getPackageVersions(db, packageId);
 
   if (!versions.has(version)) {
     return createWinGetError(event, 404, `Version ${version} of package '${packageId}' not found`);
@@ -113,7 +116,7 @@ export default defineHandler(async (event) => {
 
   const versionData = {
     PackageVersion: version,
-  } as VersionSchema;
+  } as WinGetVersionSchema;
 
   try {
     const mainPath = constructManifestPath(packageId, version, "main");
@@ -124,7 +127,7 @@ export default defineHandler(async (event) => {
     // Keep base values on error
   }
 
-  const response: VersionSingleResponse = {
+  const response: WinGetVersionSingleResponse = {
     Data: versionData,
   };
   return response;

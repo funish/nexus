@@ -5,7 +5,7 @@ import semver from "semver";
 import {
   type CdnFile,
   type CdnPackageListing,
-  CDN_CACHE_SHORT,
+  CDN_CACHE_LONG,
   CDN_JSR_REGISTRY,
   getCacheControl,
   getContentType,
@@ -172,7 +172,9 @@ export default defineHandler(async (event) => {
       const fileList = (meta?.files || []) as Array<CdnFile>;
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
+      event.res.headers.set("Cache-Control", CDN_CACHE_LONG);
+      event.res.headers.set("Vary", "Accept-Encoding");
+      event.res.headers.set("X-Resolved-Version", resolvedVersion);
 
       const response: CdnPackageListing = {
         name: metadata.name,
@@ -200,6 +202,22 @@ export default defineHandler(async (event) => {
       const contentType = getContentType(entryFile);
       event.res.headers.set("Content-Type", contentType);
       event.res.headers.set("Cache-Control", getCacheControl(resolvedVersion));
+      event.res.headers.set("Vary", "Accept-Encoding");
+      event.res.headers.set("X-Resolved-Version", resolvedVersion);
+
+      // ETag from cached file integrity (available after full package cache)
+      const entryMeta = await storage.getMeta(cacheBase);
+      const entryFiles = (entryMeta?.files || []) as Array<CdnFile>;
+      const entryFileMeta = entryFiles.find((f) => f.name === entryFile);
+      if (entryFileMeta?.integrity) {
+        const ifNoneMatch = event.req.headers.get("if-none-match");
+        if (ifNoneMatch === entryFileMeta.integrity) {
+          event.res.status = 304;
+          event.res.headers.set("ETag", entryFileMeta.integrity);
+          return null;
+        }
+        event.res.headers.set("ETag", entryFileMeta.integrity);
+      }
 
       return Buffer.from(fileData);
     }
@@ -212,6 +230,22 @@ export default defineHandler(async (event) => {
     const contentType = getContentType(filepath);
     event.res.headers.set("Content-Type", contentType);
     event.res.headers.set("Cache-Control", getCacheControl(resolvedVersion));
+    event.res.headers.set("Vary", "Accept-Encoding");
+    event.res.headers.set("X-Resolved-Version", resolvedVersion);
+
+    // ETag from cached file integrity (available after full package cache)
+    const fileMeta2 = await storage.getMeta(cacheBase);
+    const filesList2 = (fileMeta2?.files || []) as Array<CdnFile>;
+    const fileEntry = filesList2.find((f) => f.name === filepath);
+    if (fileEntry?.integrity) {
+      const ifNoneMatch = event.req.headers.get("if-none-match");
+      if (ifNoneMatch === fileEntry.integrity) {
+        event.res.status = 304;
+        event.res.headers.set("ETag", fileEntry.integrity);
+        return null;
+      }
+      event.res.headers.set("ETag", fileEntry.integrity);
+    }
 
     return Buffer.from(fileData);
   } catch (error) {
@@ -238,7 +272,9 @@ export default defineHandler(async (event) => {
       }
 
       event.res.headers.set("Content-Type", "application/json");
-      event.res.headers.set("Cache-Control", CDN_CACHE_SHORT);
+      event.res.headers.set("Cache-Control", CDN_CACHE_LONG);
+      event.res.headers.set("Vary", "Accept-Encoding");
+      event.res.headers.set("X-Resolved-Version", resolvedVersion);
 
       return listing;
     }

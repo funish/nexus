@@ -13,11 +13,11 @@ export const CDN_JSR_REGISTRY = "https://npm.jsr.io";
 
 // ── Cache Strategy ──────────────────────────────────────
 
-/** Short cache for mutable/branch/incomplete versions (10 minutes) */
-export const CDN_CACHE_SHORT = "public, max-age=600";
+/** Short cache for mutable/branch/incomplete versions (10 minutes browser, 10 minutes CDN) */
+export const CDN_CACHE_SHORT = "public, max-age=600, s-maxage=600";
 
 /** Long cache for immutable/complete semver versions (1 year) */
-export const CDN_CACHE_LONG = "public, max-age=31536000, immutable";
+export const CDN_CACHE_LONG = "public, max-age=31536000, s-maxage=31536000, immutable";
 
 /** How long a skipped package stays skipped before retry (10 minutes) */
 export const CDN_SKIP_TTL = 10 * 60 * 1000;

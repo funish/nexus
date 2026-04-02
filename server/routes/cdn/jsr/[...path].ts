@@ -5,6 +5,7 @@ import semver from "semver";
 import {
   type CdnFile,
   type CdnPackageListing,
+  JSR_REGISTRY_URL,
   getCacheControl,
   getContentType,
   getDirectoryListing,
@@ -81,8 +82,7 @@ export default defineHandler(async (event) => {
   // Fetch package metadata from npm.jsr.io
   // JSR uses npm compatibility name: @scope/package -> @jsr/scope__package
   const npmCompatName = `@jsr/${scope}__${pkg}`;
-  const registryUrl = "https://npm.jsr.io";
-  const metadataRes = await fetch(`${registryUrl}/${npmCompatName}`);
+  const metadataRes = await fetch(`${JSR_REGISTRY_URL}/${npmCompatName}`);
   if (!metadataRes.ok) {
     throw new HTTPError({
       status: 404,

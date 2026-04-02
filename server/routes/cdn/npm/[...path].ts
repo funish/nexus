@@ -4,7 +4,10 @@ import semver from "semver";
 
 import {
   type CdnFile,
+  type CdnOrgListing,
   type CdnPackageListing,
+  CACHE_CONTROL_SHORT,
+  NPM_REGISTRY_URL,
   bundleNpmPackage,
   getCacheControl,
   getContentType,
@@ -65,6 +68,27 @@ export default defineHandler(async (event) => {
   let filepath: string;
 
   if (path.startsWith("@")) {
+    // Handle org listing: @scope or @scope/ (no package name)
+    const scopeOnlyMatch = path.match(/^@([^/]+)\/?$/);
+    if (scopeOnlyMatch) {
+      const [, scope] = scopeOnlyMatch;
+      const orgRes = await fetch(`${NPM_REGISTRY_URL}/-/org/${scope}/package`);
+      if (!orgRes.ok) {
+        throw new HTTPError({ status: 404, statusText: "Organization not found" });
+      }
+      const orgData = (await orgRes.json()) as Record<string, string>;
+      const packages = Object.keys(orgData);
+
+      event.res.headers.set("Content-Type", "application/json");
+      event.res.headers.set("Cache-Control", CACHE_CONTROL_SHORT);
+
+      const response: CdnOrgListing = {
+        name: `@${scope}`,
+        packages,
+      };
+      return response;
+    }
+
     // Scoped: @types/hast@latest/index.d.ts
     const match = path.match(/^@([^/]+)\/([^@/]+)(?:@([^/]+))?(?:\/(.*))?$/);
     if (!match) {
@@ -101,8 +125,7 @@ export default defineHandler(async (event) => {
   }
 
   // Fetch package metadata from npm registry
-  const registryUrl = "https://registry.npmjs.org";
-  const metadataRes = await fetch(`${registryUrl}/${packageName}`);
+  const metadataRes = await fetch(`${NPM_REGISTRY_URL}/${packageName}`);
   if (!metadataRes.ok) {
     throw new HTTPError({
       status: 404,

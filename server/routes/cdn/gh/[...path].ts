@@ -140,11 +140,7 @@ export default defineHandler(async (event) => {
     version = "main";
   }
 
-  // Normalize semver versions with v-prefix for GitHub (tags always use v-prefix)
-  if (semver.valid(version) && !version.startsWith("v")) {
-    version = `v${version}`;
-  }
-
+  // Use version as-is from jsDelivr API — it already returns the exact tag name
   const tarballUrl = getGitHubTarballUrl(owner, repo, version);
   const storage = cacheStorage;
   const cacheBase = `cdn/gh/${owner}/${repo}/${version}`;

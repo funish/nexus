@@ -24,3 +24,12 @@ export interface CdnPackageListing extends CdnDirectoryListing {
   name?: string;
   version?: string;
 }
+
+/**
+ * Organization package listing
+ * Returned when accessing a bare scope (e.g., /cdn/npm/@vue)
+ */
+export interface CdnOrgListing {
+  name: string;
+  packages: string[];
+}

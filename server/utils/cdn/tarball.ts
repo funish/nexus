@@ -1,7 +1,7 @@
 import { HTTPError } from "nitro/h3";
 
 import { cacheStorage } from "../storage";
-import { MAX_UNPACKED_SIZE, TARBALL_DOWNLOAD_TIMEOUT } from "./constants";
+import { MAX_UNPACKED_SIZE, SKIP_TTL_MS, TARBALL_DOWNLOAD_TIMEOUT } from "./constants";
 import { calculateIntegrity } from "./integrity";
 import type { CdnFile } from "./types";
 
@@ -201,9 +201,10 @@ export async function cachePackageFromTarball(
 ): Promise<void> {
   const storage = cacheStorage;
 
-  // Check if already cached or previously skipped
+  // Check if already cached with file list, or still within skip TTL
   const cachedMeta = await storage.getMeta(cacheBase);
-  if (cachedMeta) return;
+  if (cachedMeta?.files) return;
+  if (cachedMeta?.skippedAt && Date.now() - Number(cachedMeta.skippedAt) < SKIP_TTL_MS) return;
 
   // Skip if another call is already downloading this tarball
   if (pendingTarballs.has(cacheBase)) return;
@@ -211,10 +212,12 @@ export async function cachePackageFromTarball(
 
   try {
     // Download and extract tarball
-    const tarballRes = await fetch(tarballUrl);
+    const tarballRes = await fetch(tarballUrl, {
+      signal: AbortSignal.timeout(TARBALL_DOWNLOAD_TIMEOUT),
+    });
     if (!tarballRes.ok) {
       console.error(`Failed to download tarball for ${logLabel || cacheBase}`);
-      await storage.setMeta(cacheBase, { missed: true });
+      await storage.setMeta(cacheBase, { skippedAt: Date.now() });
       return;
     }
 
@@ -240,7 +243,7 @@ export async function cachePackageFromTarball(
       console.warn(
         `Skipping ${logLabel || cacheBase}: unpacked size ${(totalSize / 1024 / 1024).toFixed(1)} MB exceeds ${MAX_UNPACKED_SIZE / 1024 / 1024} MB limit`,
       );
-      await storage.setMeta(cacheBase, { missed: true });
+      await storage.setMeta(cacheBase, { skippedAt: Date.now() });
       return;
     }
 
@@ -257,7 +260,7 @@ export async function cachePackageFromTarball(
         await storage.setItemRaw(cacheKey, fileData);
 
         // Calculate SHA-256 integrity for SRI
-        const integrity = await calculateIntegrity(fileData);
+        const integrity = calculateIntegrity(fileData);
         const fileItem = fileList.find((f) => f.name === relativePath);
         if (fileItem) {
           fileItem.integrity = integrity;

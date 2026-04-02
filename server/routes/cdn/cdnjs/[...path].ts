@@ -237,7 +237,7 @@ export default defineHandler(async (event) => {
       // If still not found or version not specified, get latest version
       if (!versionFound) {
         // Sort by semver (descending) and get first
-        const sortedVersions = allVersions.sort(semver.rcompare);
+        const sortedVersions = [...allVersions].sort(semver.rcompare);
         const latestVersion = sortedVersions[0];
         if (latestVersion) {
           version = latestVersion;

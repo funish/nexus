@@ -43,47 +43,12 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
 
   for (const [depName, depRange] of Object.entries(allDependencyRanges)) {
     try {
-      const rangeStr = depRange as string;
-      // Use semver to parse the range and get the upper bound
-      const range = new semver.Range(rangeStr);
-
-      // Get comparators from the range to find the upper bound
-      let targetVersion: string | null = null;
-
-      for (const comparatorSet of range.set) {
-        for (const comparator of comparatorSet) {
-          // Look for the upper bound (comparator with < operator)
-          if (comparator.operator === "<") {
-            const version = comparator.semver;
-            if (version.patch === 0 && version.prerelease && version.prerelease[0] === 0) {
-              const major = version.major;
-              const minor = version.minor;
-
-              if (minor === 0) {
-                targetVersion = String(major - 1);
-              } else {
-                targetVersion = `${major}.${minor - 1}`;
-              }
-              break;
-            }
-          }
-        }
-        if (targetVersion) break;
+      const minVersion = semver.minVersion(depRange as string);
+      if (minVersion) {
+        dependencies[depName] = minVersion.version;
       }
-
-      // Fallback: if no upper bound found, use minVersion
-      if (!targetVersion) {
-        const minVersion = semver.minVersion(rangeStr);
-        if (minVersion) {
-          targetVersion = minVersion.version;
-        }
-      }
-
-      if (targetVersion) {
-        dependencies[depName] = targetVersion;
-      }
-    } catch (error) {
-      console.error(`[Bundler] Error resolving ${depName}:`, error);
+    } catch {
+      console.error(`[Bundler] Error resolving ${depName}`);
     }
   }
 
@@ -204,10 +169,10 @@ export async function bundleNpmPackage(options: BundleOptions): Promise<string> 
   // Rewrite all bare imports to CDN paths
   for (const depName of allImports) {
     const cdnPath = cdnPaths[depName] || `/cdn/npm/${depName}/+esm`;
+    const escapedDepName = depName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     bundledCode = bundledCode.replaceAll(
-      new RegExp(`(?:from)?(["'])${depName}\\1`, "g"),
-      (m, quote) =>
-        m.startsWith("from") ? `from${quote}${cdnPath}${quote}` : `${quote}${cdnPath}${quote}`,
+      new RegExp(`(from\\s*["'])${escapedDepName}(["'])`, "g"),
+      `$1${cdnPath}$2`,
     );
   }
 

@@ -17,7 +17,7 @@ export async function getDirectoryListing(
 ): Promise<CdnPackageListing | null> {
   const storage = cacheStorage;
   const meta = await storage.getMeta(cacheBase);
-  const allFiles = (meta?.files || []) as Array<{ name: string; size: number }>;
+  const allFiles = (meta?.files || []) as Array<CdnFile>;
 
   const dirPrefix = `${filepath}/`;
   const dirContents: CdnFile[] = allFiles
@@ -25,6 +25,7 @@ export async function getDirectoryListing(
     .map((file) => ({
       name: file.name.slice(dirPrefix.length),
       size: file.size,
+      ...(file.integrity ? { integrity: file.integrity } : {}),
     }))
     .filter((file) => file.name.length > 0);
 

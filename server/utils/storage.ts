@@ -2,6 +2,7 @@ import fsDriver from "@bunit/storage/drivers/fs";
 import s3Driver from "@bunit/storage/drivers/s3";
 import { isDevelopment, env } from "std-env";
 import { createStorage } from "unstorage";
+import memoryDriver from "unstorage/drivers/memory";
 
 const hasS3Config =
   env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY && env.S3_ENDPOINT && env.S3_BUCKET;
@@ -29,6 +30,19 @@ export const s3Storage = hasS3Config
       }),
     })
   : null;
+
+/**
+ * In-memory storage for process-level shared state.
+ *
+ * Unlike cacheStorage (filesystem/S3), this holds ephemeral runtime state
+ * that does not need to survive restarts. Useful for cross-module state
+ * sharing without scattered module-level variables.
+ *
+ * For cluster deployments, consider replacing with a shared-state backend.
+ */
+export const memoryStorage = createStorage({
+  driver: memoryDriver(),
+});
 
 /**
  * Cache storage - uses S3 in production (if configured), filesystem otherwise

@@ -2,31 +2,41 @@ import { Database } from "bun:sqlite";
 
 import { type H3Event } from "nitro/h3";
 
+import { memoryStorage } from "../storage";
+import { WINGET_CACHE_PREFIX } from "./constants";
 import { getIndexDb } from "./db";
 import type { WinGetPackageIdentifier, WinGetPackageVersion } from "./types";
 
-// Cached package index — rebuilt only when index.db refreshes
-let cachedPackageIndex: Map<WinGetPackageIdentifier, Set<WinGetPackageVersion>> | null = null;
+const PACKAGE_INDEX_KEY = `${WINGET_CACHE_PREFIX}/package-index`;
 
 /**
- * Invalidate the in-memory package index cache.
+ * Invalidate the package index cache.
  * Called after a successful index.db refresh.
  */
 export function invalidatePackageIndex(): void {
-  cachedPackageIndex = null;
+  memoryStorage.removeItem(PACKAGE_INDEX_KEY).catch(() => {});
 }
 
 /**
  * Get the package → versions index from index.db.
  *
- * Results are cached in memory and only rebuilt when the underlying
+ * Results are cached in memoryStorage and only rebuilt when the underlying
  * index.db is refreshed. Zero HTTP requests — all data comes from the
  * cached SQLite instance.
  */
 export async function getPackageIndex(
   event?: H3Event,
 ): Promise<Map<WinGetPackageIdentifier, Set<WinGetPackageVersion>>> {
-  if (cachedPackageIndex) return cachedPackageIndex;
+  const cached = await memoryStorage.getItem(PACKAGE_INDEX_KEY);
+  if (cached) {
+    // Deserialize: [id, version[]][] → Map<id, Set<version>>
+    const entries = cached as [WinGetPackageIdentifier, WinGetPackageVersion[]][];
+    const index = new Map<WinGetPackageIdentifier, Set<WinGetPackageVersion>>();
+    for (const [id, versions] of entries) {
+      index.set(id, new Set(versions));
+    }
+    return index;
+  }
 
   const db = await getIndexDb(event);
 
@@ -46,7 +56,9 @@ export async function getPackageIndex(
     versions.add(row.version);
   }
 
-  cachedPackageIndex = index;
+  // Serialize Map to JSON-storable format (Set → array)
+  const serializable = [...index.entries()].map(([id, versions]) => [id, [...versions]]);
+  await memoryStorage.setItem(PACKAGE_INDEX_KEY, serializable);
   return index;
 }
 

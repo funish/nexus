@@ -33,7 +33,6 @@
     "fastest-levenshtein": "1.0.16",
     "fflate": "0.8.2",
     "nitro": "3.0.1-alpha.2",
-    "pkg-types": "2.3.0",
     "semver": "7.7.4",
     "std-env": "4.0.0",
     "vite-plus": "0.1.15"

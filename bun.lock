@@ -22,11 +22,11 @@
   "packages": {
     "@bunit/storage": ["@bunit/storage@0.0.6", "", { "peerDependencies": { "unstorage": "^2.0.0-alpha.7" } }, "sha512-GQaUhUxWE3hO7pINgrtXGP325/34/6QtVI7vs1Nt3cq4rmfOMU+1fz8QZPiGjUmgKxtYLAs3+CJ3lWOkAyakzQ=="],
 
-    "@emnapi/core": ["@emnapi/core@1.9.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.0", "tslib": "^2.4.0" } }, "sha512-mukuNALVsoix/w1BJwFzwXBN/dHeejQtuVzcDsfOEsdpCumXb/E9j8w11h5S54tT1xhifGfbbSm/ICrObRb3KA=="],
+    "@emnapi/core": ["@emnapi/core@1.9.2", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.1", "tslib": "^2.4.0" } }, "sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA=="],
 
-    "@emnapi/runtime": ["@emnapi/runtime@1.9.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-VYi5+ZVLhpgK4hQ0TAjiQiZ6ol0oe4mBx7mVv7IflsiEp0OWoVsp/+f9Vc1hOhE0TtkORVrI1GvzyreqpgWtkA=="],
+    "@emnapi/runtime": ["@emnapi/runtime@1.9.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-3U4+MIWHImeyu1wnmVygh5WlgfYDtyf0k8AbLhMFxOipihf6nrWC4syIm/SwEeec0mNSafiiNnMJwbza/Is6Lw=="],
 
-    "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.0", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-N10dEJNSsUx41Z6pZsXU8FjPjpBEplgH24sfkmITrBED1/U2Esum9F3lfLrMjKHHjmi557zQn7kR9R+XWXu5Rg=="],
+    "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.1.2", "", { "dependencies": { "@tybys/wasm-util": "^0.10.1" }, "peerDependencies": { "@emnapi/core": "^1.7.1", "@emnapi/runtime": "^1.7.1" } }, "sha512-sNXv5oLJ7ob93xkZ1XnxisYhGYXfaG9f65/ZgYuAu3qt7b3NadcOEhLvx28hv31PgX8SZJRYrAIPQilQmFpLVw=="],
 
@@ -334,7 +334,7 @@
 
     "nanoid": ["nanoid@3.3.11", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w=="],
 
-    "nf3": ["nf3@0.3.14", "", {}, "sha512-MjG9u/IlvSq5txxY0oug1sjrGZ2l37IuhExI1iPuwV4S3RcyRNGoy6xLwznH3ATK6PUAM4fbQVb4Rzy1L1nlzw=="],
+    "nf3": ["nf3@0.3.16", "", {}, "sha512-Gs0xRPpUm2nDkqbi40NJ9g7qDIcjcJzgExiydnq6LAyqhI2jfno8wG3NKTL+IiJsx799UHOb1CnSd4Wg4SG4Pw=="],
 
     "nitro": ["nitro@3.0.1-alpha.2", "", { "dependencies": { "consola": "^3.4.2", "crossws": "^0.4.3", "db0": "^0.3.4", "h3": "^2.0.1-rc.11", "jiti": "^2.6.1", "nf3": "^0.3.5", "ofetch": "^2.0.0-alpha.3", "ohash": "^2.0.11", "oxc-minify": "^0.110.0", "oxc-transform": "^0.110.0", "srvx": "^0.10.1", "undici": "^7.18.2", "unenv": "^2.0.0-rc.24", "unstorage": "^2.0.0-alpha.5" }, "peerDependencies": { "rolldown": ">=1.0.0-beta.0", "rollup": "^4", "vite": "^7 || ^8 || >=8.0.0-0", "xml2js": "^0.6.2" }, "optionalPeers": ["rolldown", "rollup", "vite", "xml2js"], "bin": { "nitro": "dist/cli/index.mjs" } }, "sha512-YviDY5J/trS821qQ1fpJtpXWIdPYiOizC/meHavlm1Hfuhx//H+Egd1+4C5SegJRgtWMnRPW9n//6Woaw81cTQ=="],
 
@@ -398,7 +398,7 @@
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
 
-    "undici": ["undici@7.24.6", "", {}, "sha512-Xi4agocCbRzt0yYMZGMA6ApD7gvtUFaxm4ZmeacWI4cZxaF6C+8I8QfofC20NAePiB/IcvZmzkJ7XPa471AEtA=="],
+    "undici": ["undici@7.24.7", "", {}, "sha512-H/nlJ/h0ggGC+uRL3ovD+G0i4bqhvsDOpbDv7At5eFLlj2b41L8QliGbnl2H7SnDiYhENphh1tQFJZf+MyfLsQ=="],
 
     "undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
@@ -408,12 +408,12 @@
 
     "vite": ["vite@8.0.3", "", { "dependencies": { "lightningcss": "^1.32.0", "picomatch": "^4.0.4", "postcss": "^8.5.8", "rolldown": "1.0.0-rc.12", "tinyglobby": "^0.2.15" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.1.0", "esbuild": "^0.27.0", "jiti": ">=1.21.0", "less": "^4.0.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-B9ifbFudT1TFhfltfaIPgjo9Z3mDynBTJSUYxTjOQruf/zHH+ezCQKcoqO+h7a9Pw9Nm/OtlXAiGT1axBgwqrQ=="],
 
-    "vite-plus": ["vite-plus@0.1.15", "", { "dependencies": { "@oxc-project/types": "=0.122.0", "@voidzero-dev/vite-plus-core": "0.1.15", "@voidzero-dev/vite-plus-test": "0.1.15", "cac": "^7.0.0", "cross-spawn": "^7.0.5", "jsonc-parser": "^3.3.1", "oxfmt": "=0.43.0", "oxlint": "=1.58.0", "oxlint-tsgolint": "=0.18.1", "picocolors": "^1.1.1" }, "optionalDependencies": { "@voidzero-dev/vite-plus-darwin-arm64": "0.1.15", "@voidzero-dev/vite-plus-darwin-x64": "0.1.15", "@voidzero-dev/vite-plus-linux-arm64-gnu": "0.1.15", "@voidzero-dev/vite-plus-linux-arm64-musl": "0.1.15", "@voidzero-dev/vite-plus-linux-x64-gnu": "0.1.15", "@voidzero-dev/vite-plus-linux-x64-musl": "0.1.15", "@voidzero-dev/vite-plus-win32-arm64-msvc": "0.1.15", "@voidzero-dev/vite-plus-win32-x64-msvc": "0.1.15" }, "bin": { "oxfmt": "bin/oxfmt", "oxlint": "bin/oxlint", "vp": "bin/vp" } }, "sha512-PBUvTq4D4BJcuusCA3mrSQmXcGVdPX9CIPpS7Y6+T+LbDsrmAZ+ITl9FzuE6zXvpT6Nht9cpHtwOLJw7m3adog=="],
+    "vite-plus": ["vite-plus@0.1.15", "", { "dependencies": { "@oxc-project/types": "=0.122.0", "@voidzero-dev/vite-plus-core": "0.1.15", "@voidzero-dev/vite-plus-test": "0.1.15", "cac": "^7.0.0", "cross-spawn": "^7.0.5", "jsonc-parser": "^3.3.1", "oxfmt": "=0.43.0", "oxlint": "=1.58.0", "oxlint-tsgolint": "=0.18.1", "picocolors": "^1.1.1" }, "optionalDependencies": { "@voidzero-dev/vite-plus-darwin-arm64": "0.1.15", "@voidzero-dev/vite-plus-darwin-x64": "0.1.15", "@voidzero-dev/vite-plus-linux-arm64-gnu": "0.1.15", "@voidzero-dev/vite-plus-linux-arm64-musl": "0.1.15", "@voidzero-dev/vite-plus-linux-x64-gnu": "0.1.15", "@voidzero-dev/vite-plus-linux-x64-musl": "0.1.15", "@voidzero-dev/vite-plus-win32-arm64-msvc": "0.1.15", "@voidzero-dev/vite-plus-win32-x64-msvc": "0.1.15" }, "bin": { "vp": "bin/vp", "oxfmt": "bin/oxfmt", "oxlint": "bin/oxlint" } }, "sha512-PBUvTq4D4BJcuusCA3mrSQmXcGVdPX9CIPpS7Y6+T+LbDsrmAZ+ITl9FzuE6zXvpT6Nht9cpHtwOLJw7m3adog=="],
 
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 
     "ws": ["ws@8.20.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA=="],
 
-    "h3/srvx": ["srvx@0.11.13", "", { "bin": { "srvx": "bin/srvx.mjs" } }, "sha512-oknN6qduuMPafxKtHucUeG32Q963pjriA5g3/Bl05cwEsUe5VVbIU4qR9LrALHbipSCyBe+VmfDGGydqazDRkw=="],
+    "h3/srvx": ["srvx@0.11.15", "", { "bin": { "srvx": "bin/srvx.mjs" } }, "sha512-iXsux0UcOjdvs0LCMa2Ws3WwcDUozA3JN3BquNXkaFPP7TpRqgunKdEgoZ/uwb1J6xaYHfxtz9Twlh6yzwM6Tg=="],
   }
 }

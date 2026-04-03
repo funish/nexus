@@ -5,6 +5,8 @@ import { type H3Event } from "nitro/h3";
 
 import { cacheStorage } from "../storage";
 import { WINGET_INDEX_DB_KEY, WINGET_SOURCE_MSIX_URL, WINGET_UPDATE_INTERVAL } from "./constants";
+import { invalidatePackageIndex } from "./queries";
+import { buildSearchIndex, getSearchIndex, persistSearchIndex } from "./search";
 
 // index.db management
 
@@ -29,7 +31,7 @@ function createMissingIndexes(db: Database): void {
 
 /**
  * Download source.msix and extract Public/index.db into cacheStorage,
- * then update the in-memory cached instance.
+ * then update the in-memory cached instance and rebuild the search index.
  */
 async function refreshIndexDb(): Promise<void> {
   const response = await fetch(WINGET_SOURCE_MSIX_URL);
@@ -54,6 +56,13 @@ async function refreshIndexDb(): Promise<void> {
   indexesCreated = false;
   createMissingIndexes(cachedDb);
   cachedDbTime = Date.now();
+
+  // Rebuild and persist the search index
+  const searchIndex = buildSearchIndex(cachedDb);
+  await persistSearchIndex(searchIndex);
+
+  // Invalidate derived caches
+  invalidatePackageIndex();
 }
 
 /**
@@ -77,6 +86,9 @@ export async function getIndexDb(event?: H3Event): Promise<Database> {
       indexesCreated = false;
       createMissingIndexes(cachedDb);
       cachedDbTime = meta?.mtime ? new Date(meta.mtime).getTime() : Date.now();
+
+      // Ensure search index is loaded into memory
+      await getSearchIndex();
 
       if ((Date.now() - cachedDbTime) / 1000 < WINGET_UPDATE_INTERVAL) {
         return cachedDb;

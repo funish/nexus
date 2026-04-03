@@ -7,7 +7,7 @@ import { WINGET_CACHE_PREFIX } from "./constants";
 import { getIndexDb } from "./db";
 import type { WinGetPackageIdentifier, WinGetPackageVersion } from "./types";
 
-const PACKAGE_INDEX_KEY = `${WINGET_CACHE_PREFIX}/package-index`;
+const PACKAGE_INDEX_KEY = `${WINGET_CACHE_PREFIX}/package-index.json`;
 
 /**
  * Invalidate the package index cache.

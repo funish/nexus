@@ -164,6 +164,24 @@ export interface WinGetError {
 // Search types
 
 /**
+ * Lightweight entry for fuse.js search index.
+ * Extracted from index.db and cached in memoryStorage for fast fuzzy search.
+ * Contains all fields needed to serve search responses without a second DB query.
+ */
+export interface WinGetSearchEntry {
+  id: string;
+  name: string;
+  publisher: string;
+  monikers: string[];
+  tags: string[];
+  commands: string[];
+  versions: WinGetManifestSearchVersionResponse[];
+  packageFamilyNames: string[];
+  productCodes: string[];
+  upgradeCodes: string[];
+}
+
+/**
  * Match type for search queries
  */
 export type WinGetMatchType =
@@ -239,8 +257,6 @@ export interface WinGetManifestSearchResponse {
   PackageName: string;
   Publisher: string;
   Versions: WinGetManifestSearchVersionResponse[];
-  /** @internal fuzzy search score, removed before response */
-  _fuzzyScore?: number;
 }
 
 /**

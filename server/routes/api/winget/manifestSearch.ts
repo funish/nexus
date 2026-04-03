@@ -2,8 +2,13 @@ import { defineRouteMeta } from "nitro";
 import { defineHandler, getQuery, readBody } from "nitro/h3";
 
 import { getIndexDb } from "../../../utils/winget/db";
-import { searchPackages } from "../../../utils/winget/search";
-import { decodeContinuationToken, encodeContinuationToken } from "../../../utils/winget/token";
+import {
+  buildSearchIndex,
+  getSearchIndex,
+  persistSearchIndex,
+  searchPackages,
+} from "../../../utils/winget/search";
+import { encodeContinuationToken } from "../../../utils/winget/token";
 import type {
   WinGetManifestSearchRequest,
   WinGetManifestSearchResult,
@@ -179,18 +184,24 @@ export default defineHandler(async (event) => {
     };
   }
 
-  const db = await getIndexDb(event);
+  let searchIndex = await getSearchIndex();
+  if (!searchIndex) {
+    const db = await getIndexDb(event);
+    searchIndex = buildSearchIndex(db);
+    await persistSearchIndex(searchIndex);
+  }
 
   // ContinuationToken from header (spec defines it as a header parameter)
   const headerToken = event.req.headers.get("continuationtoken") || undefined;
 
-  const { results, hasMore } = searchPackages(db, {
+  const { results, hasMore, offset } = searchPackages({
     keyword: searchRequest.Query?.KeyWord,
     matchType: searchRequest.Query?.MatchType,
     maximumResults: searchRequest.MaximumResults,
     continuationToken: headerToken,
     inclusions: searchRequest.Inclusions,
     filters: searchRequest.Filters,
+    searchIndex,
   });
 
   const response: WinGetManifestSearchResult = {
@@ -200,8 +211,7 @@ export default defineHandler(async (event) => {
   };
 
   if (hasMore) {
-    const currentOffset = decodeContinuationToken(headerToken);
-    response.ContinuationToken = encodeContinuationToken(currentOffset + results.length);
+    response.ContinuationToken = encodeContinuationToken(offset + results.length);
   }
 
   event.res.headers.set("Cache-Control", "public, max-age=300");

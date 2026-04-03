@@ -31,6 +31,9 @@ export const WINGET_INDEX_DB_KEY = `${WINGET_CACHE_PREFIX}/index.db`;
 /** Cache key for manifests directory SHA */
 export const WINGET_MANIFESTS_SHA_KEY = `${WINGET_CACHE_PREFIX}/manifests-sha`;
 
+/** Cache key for fuse.js search index */
+export const WINGET_SEARCH_INDEX_KEY = `${WINGET_CACHE_PREFIX}/index.json`;
+
 // ── Pagination ───────────────────────────────────────────
 
 /** Default page size for package listing */

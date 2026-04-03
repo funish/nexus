@@ -12,23 +12,6 @@ import {
 import type { WinGetGitHubTreeResponse } from "./types";
 
 /**
- * Get GitHub authentication headers if token is available
- */
-export function getGitHubHeaders(): HeadersInit {
-  const token = env.GITHUB_TOKEN;
-
-  const headers: HeadersInit = {
-    "User-Agent": "Funish Nexus",
-  };
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  return headers;
-}
-
-/**
  * Fetch GitHub tree data by SHA or branch
  */
 export async function getGitHubTree(
@@ -36,9 +19,14 @@ export async function getGitHubTree(
   recursive: boolean = false,
 ): Promise<WinGetGitHubTreeResponse> {
   const url = `${WINGET_GITHUB_API_BASE}/repos/${WINGET_GITHUB_REPO}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
-  const response = await fetch(url, {
-    headers: getGitHubHeaders(),
-  });
+
+  const headers: HeadersInit = { "User-Agent": "Funish Nexus" };
+  const token = env.GITHUB_TOKEN;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(url, { headers });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch GitHub tree: ${response.statusText}`);
@@ -85,45 +73,10 @@ export async function getGitHubTreePaths(treeSha: string, cacheSuffix: string): 
 }
 
 /**
- * Get the SHA of the manifests directory (cached 10-min TTL)
- */
-export async function getManifestsSha(): Promise<string> {
-  // Check cache metadata
-  const meta = await cacheStorage.getMeta(WINGET_MANIFESTS_SHA_KEY);
-  const now = new Date();
-
-  if (meta?.mtime) {
-    const cacheAge = (now.getTime() - new Date(meta.mtime).getTime()) / 1000;
-    if (cacheAge < WINGET_UPDATE_INTERVAL) {
-      const cached = await cacheStorage.getItem(WINGET_MANIFESTS_SHA_KEY);
-      if (cached && typeof cached === "string") {
-        return cached;
-      }
-    }
-  }
-
-  // Fetch root tree
-  const rootTree = await getGitHubTree(WINGET_GITHUB_BRANCH, false);
-  const manifestsItem = rootTree.tree.find(
-    (item) => item.path === "manifests" && item.type === "tree",
-  );
-
-  if (!manifestsItem) {
-    throw new Error("manifests directory not found in repository");
-  }
-
-  // Cache the SHA
-  await cacheStorage.setItem(WINGET_MANIFESTS_SHA_KEY, manifestsItem.sha);
-  await cacheStorage.setMeta(WINGET_MANIFESTS_SHA_KEY, { mtime: new Date() });
-
-  return manifestsItem.sha;
-}
-
-/**
  * Get all letter directory SHAs from manifests (a-z, 0-9)
  */
 export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
-  const cacheKey = `${WINGET_CACHE_PREFIX}/letter-shas`;
+  const cacheKey = `${WINGET_CACHE_PREFIX}/letter-shas.json`;
 
   // Check cache
   const meta = await cacheStorage.getMeta(cacheKey);
@@ -139,7 +92,26 @@ export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
     }
   }
 
-  const manifestsSha = await getManifestsSha();
+  // Get manifests SHA (cached 10-min TTL)
+  const shaMeta = await cacheStorage.getMeta(WINGET_MANIFESTS_SHA_KEY);
+  let manifestsSha: string;
+
+  if (shaMeta?.mtime) {
+    const shaAge = (now.getTime() - new Date(shaMeta.mtime).getTime()) / 1000;
+    if (shaAge < WINGET_UPDATE_INTERVAL) {
+      const cached = await cacheStorage.getItem(WINGET_MANIFESTS_SHA_KEY);
+      if (cached && typeof cached === "string") {
+        manifestsSha = cached;
+      } else {
+        manifestsSha = await fetchManifestsSha();
+      }
+    } else {
+      manifestsSha = await fetchManifestsSha();
+    }
+  } else {
+    manifestsSha = await fetchManifestsSha();
+  }
+
   const manifestsTree = await getGitHubTree(manifestsSha, false);
 
   const letterShas = new Map<string, string>();
@@ -159,4 +131,23 @@ export async function getLetterDirectoryShas(): Promise<Map<string, string>> {
   await cacheStorage.setMeta(cacheKey, { mtime: new Date() });
 
   return letterShas;
+}
+
+/**
+ * Fetch the manifests directory SHA from the root tree.
+ */
+export async function fetchManifestsSha(): Promise<string> {
+  const rootTree = await getGitHubTree(WINGET_GITHUB_BRANCH, false);
+  const manifestsItem = rootTree.tree.find(
+    (item) => item.path === "manifests" && item.type === "tree",
+  );
+
+  if (!manifestsItem) {
+    throw new Error("manifests directory not found in repository");
+  }
+
+  await cacheStorage.setItem(WINGET_MANIFESTS_SHA_KEY, manifestsItem.sha);
+  await cacheStorage.setMeta(WINGET_MANIFESTS_SHA_KEY, { mtime: new Date() });
+
+  return manifestsItem.sha;
 }

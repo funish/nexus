@@ -199,6 +199,7 @@ export type WinGetMatchType =
 export type WinGetPackageMatchField =
   | "PackageIdentifier"
   | "PackageName"
+  | "Publisher"
   | "Moniker"
   | "Command"
   | "Tag"

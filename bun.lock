@@ -6,6 +6,7 @@
       "name": "nexus",
       "devDependencies": {
         "@bunit/storage": "0.0.6",
+        "@nlptools/distance": "0.0.5",
         "@types/bun": "1.3.11",
         "@types/node": "25.5.0",
         "@types/semver": "7.7.1",
@@ -20,6 +21,10 @@
     },
   },
   "packages": {
+    "@algorithm.ts/diff": ["@algorithm.ts/diff@1.0.4", "", { "dependencies": { "@algorithm.ts/lcs": "^4.0.6" } }, "sha512-aJSOUOFJL6j/5TizB0lefxEBud590scJDcycY9OmuDzjEqBoRxFJPKVPnVbftCB8pToPqJ601HYK9OJA22dVpQ=="],
+
+    "@algorithm.ts/lcs": ["@algorithm.ts/lcs@4.0.6", "", {}, "sha512-uu6TgA77++klfI1kM3q9LotWsTrzOzsnot8CmICzdNSG7GWxKvVb+IMMUVILrTbUKoLVfv2Js33PqfXnvkusag=="],
+
     "@bunit/storage": ["@bunit/storage@0.0.6", "", { "peerDependencies": { "unstorage": "^2.0.0-alpha.7" } }, "sha512-GQaUhUxWE3hO7pINgrtXGP325/34/6QtVI7vs1Nt3cq4rmfOMU+1fz8QZPiGjUmgKxtYLAs3+CJ3lWOkAyakzQ=="],
 
     "@emnapi/core": ["@emnapi/core@1.9.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.0", "tslib": "^2.4.0" } }, "sha512-mukuNALVsoix/w1BJwFzwXBN/dHeejQtuVzcDsfOEsdpCumXb/E9j8w11h5S54tT1xhifGfbbSm/ICrObRb3KA=="],
@@ -29,6 +34,8 @@
     "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.0", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-N10dEJNSsUx41Z6pZsXU8FjPjpBEplgH24sfkmITrBED1/U2Esum9F3lfLrMjKHHjmi557zQn7kR9R+XWXu5Rg=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.1.2", "", { "dependencies": { "@tybys/wasm-util": "^0.10.1" }, "peerDependencies": { "@emnapi/core": "^1.7.1", "@emnapi/runtime": "^1.7.1" } }, "sha512-sNXv5oLJ7ob93xkZ1XnxisYhGYXfaG9f65/ZgYuAu3qt7b3NadcOEhLvx28hv31PgX8SZJRYrAIPQilQmFpLVw=="],
+
+    "@nlptools/distance": ["@nlptools/distance@0.0.5", "", { "dependencies": { "@algorithm.ts/diff": "1.0.4", "@algorithm.ts/lcs": "4.0.6", "fastest-levenshtein": "1.0.16" } }, "sha512-Wm1OA3IVMxVxpxnjGhbueYZyi8bzGqQYM2Mj2tPn+p9fouCouxD852KhMkbZYf56GmXJfVtR4o8/5OqR8iZU1w=="],
 
     "@oxc-minify/binding-android-arm-eabi": ["@oxc-minify/binding-android-arm-eabi@0.110.0", "", { "os": "android", "cpu": "arm" }, "sha512-43fMTO8/5bMlqfOiNSZNKUzIqeLIYuB9Hr1Ohyf58B1wU11S2dPGibTXOGNaWsfgHy99eeZ1bSgeIHy/fEYqbw=="],
 
@@ -289,6 +296,8 @@
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
     "es-module-lexer": ["es-module-lexer@1.7.0", "", {}, "sha512-jEQoCwk8hyb2AZziIOLhDqpm5+2ww5uIE6lkO/6jcOCusfk6LhMHpXXfBLXTZ7Ydyt0j4VoUQv6uGNYbdW+kBA=="],
+
+    "fastest-levenshtein": ["fastest-levenshtein@1.0.16", "", {}, "sha512-eRnCtTTtGZFpQCwhJiUOuxPQWRXVKYDn0b2PeHfXL6/Zi53SLAzAHfVhVWK2AryC/WH05kGfxhFIPvTF0SXQzg=="],
 
     "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
 

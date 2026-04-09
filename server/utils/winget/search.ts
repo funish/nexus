@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 
-import Fuse, { type Expression, type IFuseOptions } from "fuse.js";
+import { FuzzySearch, type ISearchKey } from "@nlptools/distance";
 
 import { cacheStorage, memoryStorage } from "../storage";
 import { WINGET_SEARCH_INDEX_KEY } from "./constants";
@@ -154,9 +154,10 @@ export async function getSearchIndex(): Promise<WinGetSearchEntry[] | null> {
   return null;
 }
 
-// ── Fuse.js configuration ─────────────────────────────
+// ── Search configuration ──────────────────────────────
 
-const FUSE_KEYS = [
+/** Search keys with weights matching fuse.js config */
+const SEARCH_KEYS: ISearchKey[] = [
   { name: "id", weight: 2 },
   { name: "name", weight: 2 },
   { name: "publisher", weight: 1 },
@@ -168,20 +169,11 @@ const FUSE_KEYS = [
   { name: "upgradeCodes", weight: 1 },
 ];
 
-const FUSE_OPTIONS: IFuseOptions<WinGetSearchEntry> = {
-  keys: FUSE_KEYS,
-  threshold: 0.4,
-  includeScore: true,
-  shouldSort: true,
-  useExtendedSearch: true,
-};
-
-// ── Fuse instance creation ────────────────────────────
-
-/** Map WinGet PackageMatchField to fuse.js key name */
+/** Map WinGet PackageMatchField to WinGetSearchEntry key */
 const FIELD_TO_KEY: Partial<Record<WinGetPackageMatchField, string>> = {
   PackageIdentifier: "id",
   PackageName: "name",
+  Publisher: "publisher",
   Moniker: "monikers",
   Command: "commands",
   Tag: "tags",
@@ -190,114 +182,167 @@ const FIELD_TO_KEY: Partial<Record<WinGetPackageMatchField, string>> = {
   UpgradeCode: "upgradeCodes",
 };
 
-/**
- * Create a fuse.js instance configured for the given match type.
- */
-export function createFuse(
-  index: WinGetSearchEntry[],
-  matchType?: WinGetMatchType,
-): Fuse<WinGetSearchEntry> {
-  const opts: IFuseOptions<WinGetSearchEntry> = { ...FUSE_OPTIONS, keys: FUSE_KEYS };
+// ── Match helpers ─────────────────────────────────────
 
-  if (matchType === "Exact") {
-    opts.threshold = 0;
-  } else if (
-    matchType === "CaseInsensitive" ||
-    matchType === "Substring" ||
-    matchType === "StartsWith"
-  ) {
-    opts.threshold = 0;
-    opts.ignoreLocation = true;
-  } else if (matchType === "Fuzzy") {
-    opts.threshold = 0.4;
-  } else if (matchType === "FuzzySubstring") {
-    opts.threshold = 0.4;
-    opts.ignoreLocation = true;
-  }
+/** Match a single string value against a keyword with the given match type */
+export function matchString(value: string, keyword: string, matchType?: WinGetMatchType): boolean {
+  const lv = value.toLowerCase();
+  const lk = keyword.toLowerCase();
 
-  return new Fuse(index, opts);
-}
-
-/** Map WinGet MatchType to fuse.js extended search pattern modifier */
-export function toExtendedPattern(keyword: string, matchType?: WinGetMatchType): string {
   switch (matchType) {
     case "Exact":
-      return `'${keyword}`;
+      return lv === lk;
+    case "CaseInsensitive":
+      return lv.includes(lk);
     case "StartsWith":
-      return `^${keyword}`;
+      return lv.startsWith(lk);
+    case "Substring":
+      return lv.includes(lk);
     case "Wildcard":
-      return keyword;
+      // Simple glob: treat as case-insensitive substring for now
+      return lv.includes(lk);
+    case "Fuzzy":
+    case "FuzzySubstring":
+      // Fuzzy matching handled by FuzzySearch; this is used for filters/inclusions
+      // Fall through to case-insensitive substring as a reasonable default
+      return lv.includes(lk);
     default:
-      return keyword;
+      return lv.includes(lk);
   }
 }
 
 /**
- * Build a combined fuse.js extended search query.
- * Uses $and for keyword + inclusions, and ! prefix for filters (NOT).
- * NormalizedPackageNameAndPublisher maps to $or across name and publisher.
+ * Check if an entry matches a single filter/inclusion condition.
+ * For array fields (monikers, tags, commands, etc.), checks if any element matches.
  */
-export function buildSearchQuery(
-  keyword?: string,
+export function matchesField(
+  entry: WinGetSearchEntry,
+  fieldName: string,
+  keyword: string,
   matchType?: WinGetMatchType,
-  inclusions?: WinGetSearchRequestPackageMatchFilter[],
-  filters?: WinGetSearchRequestPackageMatchFilter[],
-): string | Expression {
-  const conditions: (string | Expression)[] = [];
-
-  if (keyword) {
-    conditions.push(toExtendedPattern(keyword, matchType));
+): boolean {
+  const value = (entry as unknown as Record<string, unknown>)[fieldName];
+  if (typeof value === "string") {
+    return matchString(value, keyword, matchType);
   }
+  if (Array.isArray(value)) {
+    return value.some((v) => typeof v === "string" && matchString(v, keyword, matchType));
+  }
+  return false;
+}
 
-  if (inclusions) {
-    for (const inc of inclusions) {
-      if (!inc.RequestMatch?.KeyWord || !inc.PackageMatchField) continue;
+/**
+ * Apply inclusions (AND): entry must match ALL inclusions.
+ * NormalizedPackageNameAndPublisher maps to name OR publisher.
+ */
+export function matchesInclusions(
+  entry: WinGetSearchEntry,
+  inclusions: WinGetSearchRequestPackageMatchFilter[],
+): boolean {
+  return inclusions.every((inc) => {
+    if (!inc.RequestMatch?.KeyWord) return true;
+    const kw = inc.RequestMatch.KeyWord;
+    const mt = inc.RequestMatch.MatchType;
 
-      if (inc.PackageMatchField === "NormalizedPackageNameAndPublisher") {
-        const pattern = toExtendedPattern(inc.RequestMatch.KeyWord, inc.RequestMatch.MatchType);
-        conditions.push({ $or: [{ name: pattern }, { publisher: pattern }] });
-        continue;
-      }
-
-      const key = FIELD_TO_KEY[inc.PackageMatchField];
-      if (!key) continue;
-      conditions.push({
-        [key]: toExtendedPattern(inc.RequestMatch.KeyWord, inc.RequestMatch.MatchType),
-      });
+    if (inc.PackageMatchField === "NormalizedPackageNameAndPublisher") {
+      return matchString(entry.name, kw, mt) || matchString(entry.publisher, kw, mt);
     }
-  }
 
-  if (filters) {
-    for (const f of filters) {
-      if (!f.RequestMatch?.KeyWord || !f.PackageMatchField) continue;
+    const key = FIELD_TO_KEY[inc.PackageMatchField];
+    if (!key) return true;
+    return matchesField(entry, key, kw, mt);
+  });
+}
 
-      if (f.PackageMatchField === "NormalizedPackageNameAndPublisher") {
-        const pattern = toExtendedPattern(f.RequestMatch.KeyWord, f.RequestMatch.MatchType);
-        conditions.push({
-          $or: [
-            { name: `!${pattern.replace(/^!/, "")}` },
-            { publisher: `!${pattern.replace(/^!/, "")}` },
-          ],
-        });
-        continue;
-      }
+/**
+ * Apply filters (AND): entry must NOT match ANY filter.
+ */
+export function matchesFilters(
+  entry: WinGetSearchEntry,
+  filters: WinGetSearchRequestPackageMatchFilter[],
+): boolean {
+  return !filters.some((f) => {
+    if (!f.RequestMatch?.KeyWord) return false;
+    const kw = f.RequestMatch.KeyWord;
+    const mt = f.RequestMatch.MatchType;
 
-      const key = FIELD_TO_KEY[f.PackageMatchField];
-      if (!key) continue;
-      const raw = toExtendedPattern(f.RequestMatch.KeyWord, f.RequestMatch.MatchType);
-      conditions.push({ [key]: `!${raw.replace(/^!/, "")}` });
+    if (f.PackageMatchField === "NormalizedPackageNameAndPublisher") {
+      return matchString(entry.name, kw, mt) || matchString(entry.publisher, kw, mt);
     }
+
+    const key = FIELD_TO_KEY[f.PackageMatchField];
+    if (!key) return false;
+    return matchesField(entry, key, kw, mt);
+  });
+}
+
+// ── FuzzySearch configuration per match type ──────────
+
+/**
+ * Check if any searchable field of an entry matches the keyword, and return
+ * a relevance score for sorting. Higher score = more relevant.
+ */
+export function scoreEntryKeyword(
+  entry: WinGetSearchEntry,
+  keyword: string,
+  matchType?: WinGetMatchType,
+): number {
+  const kw = keyword.toLowerCase();
+  const fields = [
+    entry.id,
+    entry.name,
+    entry.publisher,
+    ...entry.monikers,
+    ...entry.tags,
+    ...entry.commands,
+    ...entry.packageFamilyNames,
+    ...entry.productCodes,
+    ...entry.upgradeCodes,
+  ];
+
+  let best = 0;
+
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]!.toLowerCase();
+    let matched = false;
+    let score = 0;
+
+    switch (matchType) {
+      case "Exact":
+        matched = f === kw;
+        score = matched ? 1000 - i : 0;
+        break;
+      case "CaseInsensitive":
+        // WinGet CaseInsensitive = case-insensitive substring match (not exact)
+        matched = f.includes(kw);
+        score = matched ? 1000 - i + (kw.length / f.length) * 100 : 0;
+        break;
+      case "StartsWith":
+        matched = f.startsWith(kw);
+        score = matched ? 1000 - i + (kw.length / f.length) * 100 : 0;
+        break;
+      case "Substring":
+      case "Wildcard":
+      case "FuzzySubstring":
+        matched = f.includes(kw);
+        score = matched ? 1000 - i + (kw.length / f.length) * 100 : 0;
+        break;
+      default:
+        matched = f.includes(kw);
+        score = matched ? 1000 - i + (kw.length / f.length) * 100 : 0;
+    }
+
+    if (score > best) best = score;
+    if (matched && (matchType === "Exact" || matchType === "CaseInsensitive")) return best;
   }
 
-  if (conditions.length === 0) return "";
-  if (conditions.length === 1) return conditions[0]!;
-  return { $and: conditions as Expression[] };
+  return best;
 }
 
 // ── Main search function ──────────────────────────────
 
 /**
- * Search packages using fuse.js extended search.
+ * Search packages using @nlptools/distance FuzzySearch.
  * All data comes from the in-memory search index — no DB query needed.
  */
 export function searchPackages(options: {
@@ -326,9 +371,43 @@ export function searchPackages(options: {
   if (!keyword && !inclusions?.length && !filters?.length) {
     matchedEntries = searchIndex;
   } else {
-    const fuse = createFuse(searchIndex, matchType);
-    const query = buildSearchQuery(keyword, matchType, inclusions, filters);
-    matchedEntries = fuse.search(query).map((r) => r.item);
+    let candidates: WinGetSearchEntry[];
+
+    if (keyword) {
+      const isFuzzy = matchType === "Fuzzy" || matchType === "FuzzySubstring";
+
+      if (isFuzzy) {
+        // Use FuzzySearch with levenshtein for fuzzy matching
+        const engine = new FuzzySearch(searchIndex, {
+          keys: SEARCH_KEYS,
+          algorithm: "levenshtein",
+          threshold: matchType === "Fuzzy" ? 0.15 : 0.1,
+          caseSensitive: false,
+        });
+        candidates = engine.search(keyword).map((r) => r.item);
+      } else {
+        // Linear scan for exact/prefix/substring — fast and correct
+        candidates = searchIndex
+          .map((e) => ({ entry: e, score: scoreEntryKeyword(e, keyword, matchType) }))
+          .filter((e) => e.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .map((e) => e.entry);
+      }
+    } else {
+      candidates = searchIndex;
+    }
+
+    // Apply inclusions (AND)
+    if (inclusions?.length) {
+      candidates = candidates.filter((e) => matchesInclusions(e, inclusions));
+    }
+
+    // Apply filters (NOT)
+    if (filters?.length) {
+      candidates = candidates.filter((e) => matchesFilters(e, filters));
+    }
+
+    matchedEntries = candidates;
   }
 
   const results: WinGetManifestSearchResponse[] = matchedEntries.map((entry) => ({

@@ -192,6 +192,20 @@ pub async fn handle_npm(
         } else {
             // Entry file — jsDelivr priority (jsdelivr > browser > main, then CSS `style`),
             // then common fallback filenames tried against the actual package contents.
+            // Cache the whole package up front (one tarball download) instead of the old
+            // single-file extract + background full-cache, which downloaded the tarball
+            // twice for the same request.
+            if !is_cached {
+                cache_package_from_tarball(
+                    &storage,
+                    &tarball_url,
+                    &cache_base,
+                    &format!("npm:{package_name}@{}", resolved.version),
+                )
+                .await
+                .map_err(|e| AppError::bad_gateway(e.to_string()))?;
+            }
+
             let entry_candidates = resolve_default_file(&resolved.version_info)
                 .or_else(|| resolve_style_file(&resolved.version_info))
                 .into_iter()
@@ -200,31 +214,13 @@ pub async fn handle_npm(
             let (entry_file, file_data) = {
                 let mut found = None;
                 for cand in entry_candidates {
-                    if let Ok(data) = extract_file_from_tarball(
-                        &storage,
-                        &tarball_url,
-                        &cand,
-                        &format!("{cache_base}/{cand}"),
-                        None,
-                    )
-                    .await
-                    {
+                    if let Some(data) = storage.get_raw(&format!("{cache_base}/{cand}")).await {
                         found = Some((cand, data));
                         break;
                     }
                 }
                 found.ok_or_else(|| AppError::not_found("Entry file not found"))?
             };
-
-            if !is_cached {
-                let storage_clone = storage.clone();
-                let url = tarball_url.clone();
-                let base = cache_base.clone();
-                let label = format!("npm:{package_name}@{}", resolved.version);
-                tokio::spawn(async move {
-                    let _ = cache_package_from_tarball(&storage_clone, &url, &base, &label).await;
-                });
-            }
 
             // jsDelivr: the default file is always minified.
             let file_data = minify_for(&entry_file, &file_data);

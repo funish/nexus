@@ -104,7 +104,7 @@
       </div>
 
       <p>
-        Universal package registry and CDN - WinGet registry mirror, npm, GitHub, JSR, cdnjs,
+        Universal package registry and CDN — WinGet registry, npm, GitHub, JSR, cdnjs,
         WordPress, and many more package registries.
       </p>
 
@@ -124,20 +124,31 @@
         <a href="/cdn/wp/plugins/wp-slimstat/tags/4.6.5/wp-slimstat.js">
           /cdn/wp/plugins/wp-slimstat/tags/4.6.5/wp-slimstat.js (WordPress plugins)
         </a>
+        <a href="/cdn/combine/npm/jquery@3/dist/jquery.min.js,gh/twbs/bootstrap@3/dist/js/bootstrap.min.js">
+          /cdn/combine/npm/...,gh/... (Combine multiple files)
+        </a>
 
         <strong>WinGet API</strong>
+        <a href="/api/winget/information"> /api/winget/information (Server information) </a>
         <a href="/api/winget/packages"> /api/winget/packages (List all packages) </a>
         <a href="/api/winget/packages/Microsoft.VisualStudioCode">
-          /api/winget/packages/{id} (Get package details)
+          /api/winget/packages/{id} (Package details)
+        </a>
+        <a href="/api/winget/packages/Microsoft.VisualStudioCode/versions">
+          /api/winget/packages/{id}/versions (Package versions)
+        </a>
+        <a href="/api/winget/packages/Microsoft.VisualStudioCode/versions/1.124.2/installers">
+          /api/winget/packages/{id}/versions/{version}/installers (Installers)
+        </a>
+        <a href="/api/winget/packages/Microsoft.VisualStudioCode/versions/1.124.2/locales">
+          /api/winget/packages/{id}/versions/{version}/locales (Locales)
+        </a>
+        <a href="/api/winget/packageManifests/Microsoft.VisualStudioCode">
+          /api/winget/packageManifests/{id} (Version manifests)
         </a>
         <a href="/api/winget/manifestSearch?query=Adobe&matchType=CaseInsensitive">
           /api/winget/manifestSearch (Search packages)
         </a>
-
-        <strong>API Documentation</strong>
-        <a href="/_docs/scalar">/_docs/scalar (Scalar UI - Interactive API docs)</a>
-        <a href="/_docs/swagger">/_docs/swagger (Swagger UI)</a>
-        <a href="/_docs/openapi.json">/_docs/openapi.json (OpenAPI specification)</a>
       </div>
     </div>
   </body>

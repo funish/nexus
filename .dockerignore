@@ -1,15 +1,39 @@
-node_modules
+# Rust build artifacts
+target
+**/*.rs.bk
+
+# Docker files (not needed inside the image)
+Dockerfile
 Dockerfile*
-docker-compose*
 .dockerignore
+docker-compose*
+docker-compose.yml
+
+# Version control & metadata
 .git
 .gitignore
+.github
+
+# Docs & license (baked into the image via COPY only if needed)
 README.md
 LICENSE
-.vscode
-Makefile
-helm-charts
+
+# Environment & local state
 .env
-.editorconfig
+.env.*
+!.env.example
+.cache
+
+# Editors & OS
+.vscode
 .idea
-coverage*
+.editorconfig
+.DS_Store
+
+# Project-internal directories (must not enter the build context)
+.backup
+.mimocode
+.claude
+
+# Logs
+*.log

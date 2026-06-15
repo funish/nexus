@@ -14,9 +14,13 @@ services:
       S3_REGION: ${S3_REGION}
       S3_BUCKET: ${S3_BUCKET}
 
-      # Node Environment
-      NODE_ENV: production
+      # Local cache directory (filesystem storage fallback)
+      CACHE_DIR: ${CACHE_DIR:-/data/.cache}
+
+      # Server
       PORT: ${PORT:-3000}
+    volumes:
+      - nexus-cache:/data/.cache
     healthcheck:
       test:
         ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PORT:-3000}/"]
@@ -24,3 +28,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+volumes:
+  nexus-cache:

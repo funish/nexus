@@ -1,33 +1,21 @@
-# use the official Bun image
-# see all versions at https://hub.docker.com/r/oven/bun/tags
-FROM oven/bun:1-slim AS build
+FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
-COPY package.json bun.lock* ./
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+COPY index.html ./
+COPY public ./public
 
-# use ignore-scripts to avoid running postinstall hooks
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN cargo build --release
 
-# Copy the entire project
-COPY . .
+FROM debian:bookworm-slim
 
-# Build with node-cluster preset
-ENV NITRO_PRESET=node_cluster
-ENV NODE_ENV=production
-RUN bun run build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget libssl3 && rm -rf /var/lib/apt/lists/*
 
-# copy production dependencies and source code into final image
-FROM oven/bun:1-slim AS production
-WORKDIR /app
+COPY --from=builder /app/target/release/nexus /usr/local/bin/
 
-# Copy .output directory
-COPY --from=build /app/.output /app
-
-# Set cluster workers
-ENV NITRO_CLUSTER_WORKERS=max
-ENV NODE_ENV=production
 ENV PORT=3000
+EXPOSE 3000
 
-# run the app
-EXPOSE 3000/tcp
-ENTRYPOINT ["bun", "--bun", "run", "/app/server/index.mjs"]
+CMD ["nexus"]

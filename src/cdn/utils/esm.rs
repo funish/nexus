@@ -103,18 +103,32 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
         }
     }
 
-    // Resolve dependency versions for import rewriting
-    let mut dep_versions: HashMap<String, String> = HashMap::new();
+    // Resolve dependency versions for import rewriting: fetch each dep's
+    // metadata and pick the newest published version satisfying the declared
+    // range (esm.sh behavior). The old min-version floor picked stale releases
+    // (e.g. 1.0.0 for ^1.2.0). Fetches run concurrently and hit the metadata
+    // cache, so repeated bundles of the same dep tree are cheap.
+    let mut tasks = tokio::task::JoinSet::new();
     for field in &["dependencies", "peerDependencies"] {
         if let Some(deps) = pkg_json[*field].as_object() {
             for (name, range) in deps {
                 if let Some(range_str) = range.as_str()
-                    && let Ok(req) = semver::VersionReq::parse(range_str)
-                    && let Ok(min) = min_version_for_req(&req)
+                    && let Ok(req) = range_str.parse::<node_semver::Range>()
                 {
-                    dep_versions.insert(name.clone(), min);
+                    let storage = storage.clone();
+                    let name = name.clone();
+                    tasks.spawn(async move {
+                        let v = latest_version_satisfying(&storage, &name, &req).await;
+                        (name, v)
+                    });
                 }
             }
+        }
+    }
+    let mut dep_versions: HashMap<String, String> = HashMap::new();
+    while let Some(res) = tasks.join_next().await {
+        if let Ok((name, Some(v))) = res {
+            dep_versions.insert(name, v);
         }
     }
 
@@ -269,12 +283,23 @@ fn to_cdn_path(spec: &str, deps: &HashMap<String, String>) -> String {
     }
 }
 
-fn min_version_for_req(req: &semver::VersionReq) -> Result<String> {
-    if let Some(comp) = req.comparators.first() {
-        let major = comp.major;
-        let minor = comp.minor.unwrap_or(0);
-        let patch = comp.patch.unwrap_or(0);
-        return Ok(format!("{major}.{minor}.{patch}"));
-    }
-    anyhow::bail!("Cannot determine min version")
+/// Newest published version of `package_name` satisfying `req`, or `None` if
+/// metadata is unavailable or no version matches. Returning `None` (rather than
+/// erroring) keeps bundling resilient to a registry hiccup — the caller just
+/// leaves that import bare.
+async fn latest_version_satisfying(
+    storage: &SharedStorage,
+    package_name: &str,
+    req: &node_semver::Range,
+) -> Option<String> {
+    let metadata = crate::cdn::utils::registry::fetch_npm_metadata(storage, package_name)
+        .await
+        .ok()?;
+    let versions = metadata.get("versions")?.as_object()?;
+    versions
+        .keys()
+        .filter_map(|s| s.parse::<node_semver::Version>().ok())
+        .filter(|v| v.satisfies(req))
+        .max()
+        .map(|v| v.to_string())
 }

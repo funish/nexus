@@ -38,6 +38,13 @@ pub fn extract_tgz(data: &[u8]) -> Result<Vec<TarEntry>> {
 
     for entry in archive.entries()? {
         let mut entry = entry?;
+        // Skip directory entries: they hold no data. On filesystem backends a
+        // cached "dist"/"src" empty file shadows its child paths (a "dist" file
+        // blocks writing "dist/d3-selection.js"), silently dropping every file
+        // under that directory. Only regular files are cached.
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
         let path = entry.path()?.to_string_lossy().to_string();
         let size = entry.size();
         let mut buf = Vec::with_capacity(size as usize);

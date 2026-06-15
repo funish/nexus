@@ -106,11 +106,12 @@ pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
         .await
         .unwrap();
 
-    let client = reqwest::Client::builder()
+    let mut resp = crate::http::HTTP_CLIENT
+        .get(url)
         .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-        .build()?;
-
-    let mut resp = client.get(url).send().await.map_err(|e| {
+        .send()
+        .await
+        .map_err(|e| {
         if e.is_timeout() {
             anyhow::anyhow!("Tarball download timed out")
         } else {
@@ -349,11 +350,12 @@ pub async fn try_fetch(url: &str) -> Option<Vec<u8>> {
         .acquire()
         .await
         .ok()?;
-    let client = reqwest::Client::builder()
+    let mut resp = crate::http::HTTP_CLIENT
+        .get(url)
         .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-        .build()
+        .send()
+        .await
         .ok()?;
-    let mut resp = client.get(url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }

@@ -38,7 +38,7 @@ async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse
         "{WINGET_GITHUB_API_BASE}/repos/{WINGET_GITHUB_REPO}/git/trees/{tree_sha}{}",
         if recursive { "?recursive=1" } else { "" }
     );
-    let mut req = super::http::HTTP_CLIENT
+    let mut req = crate::http::HTTP_CLIENT
         .get(&url)
         .timeout(Duration::from_secs(30));
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {

@@ -70,7 +70,7 @@ pub async fn fetch_manifest_content(
     }
 
     let url = format!("{WINGET_GITHUB_RAW_BASE}/{manifest_path}");
-    let resp = super::http::HTTP_CLIENT
+    let resp = crate::http::HTTP_CLIENT
         .get(&url)
         .timeout(Duration::from_secs(30))
         .send()

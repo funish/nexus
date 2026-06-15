@@ -2,7 +2,6 @@
 
 pub mod constants;
 pub mod db;
-pub mod http;
 pub mod manifest;
 pub mod queries;
 pub mod response;

@@ -1,6 +1,7 @@
 mod cdn;
 mod config;
 mod error;
+mod http;
 mod storage;
 mod winget;
 

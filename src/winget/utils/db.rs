@@ -93,7 +93,7 @@ pub async fn get_index_db(db: &SharedDb, storage: &SharedStorage) -> Result<Conn
 }
 
 async fn refresh_index_db(db: &SharedDb, storage: &SharedStorage) -> Result<Connection> {
-    let resp = super::http::HTTP_CLIENT
+    let resp = crate::http::HTTP_CLIENT
         .get(WINGET_SOURCE_MSIX_URL)
         .timeout(Duration::from_secs(120))
         .send()

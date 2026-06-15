@@ -12,10 +12,11 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         META_CACHE_TTL_SECS,
         async {
             let url = format!("{CDN_NPM_REGISTRY}/{package_name}");
-            let client = reqwest::Client::builder()
+            let resp = crate::http::HTTP_CLIENT
+                .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .build()?;
-            let resp = client.get(&url).send().await?;
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Package not found: {package_name}");
             }
@@ -37,10 +38,11 @@ pub async fn fetch_jsr_metadata(
         async {
             let npm_name = format!("@jsr/{}__{}", scope, package);
             let url = format!("{CDN_JSR_REGISTRY}/{npm_name}");
-            let client = reqwest::Client::builder()
+            let resp = crate::http::HTTP_CLIENT
+                .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .build()?;
-            let resp = client.get(&url).send().await?;
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 anyhow::bail!("JSR package not found: @{scope}/{package}");
             }
@@ -61,10 +63,11 @@ pub async fn fetch_github_tags(
         META_CACHE_TTL_SECS,
         async {
             let url = format!("https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}");
-            let client = reqwest::Client::builder()
+            let resp = crate::http::HTTP_CLIENT
+                .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .build()?;
-            let resp = client.get(&url).send().await?;
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 anyhow::bail!("GitHub repo not found: {owner}/{repo}");
             }
@@ -93,10 +96,11 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
             let url = format!(
                 "https://api.cdnjs.com/libraries/{library}?fields=version,versions,filename"
             );
-            let client = reqwest::Client::builder()
+            let resp = crate::http::HTTP_CLIENT
+                .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .build()?;
-            let resp = client.get(&url).send().await?;
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 anyhow::bail!("cdnjs library not found: {library}");
             }
@@ -112,10 +116,11 @@ pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
         .await
         .unwrap();
     let url = format!("https://api.cdnjs.com/libraries/{library}/{version}");
-    let client = reqwest::Client::builder()
+    let resp = crate::http::HTTP_CLIENT
+        .get(&url)
         .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-        .build()?;
-    let resp = client.get(&url).send().await?;
+        .send()
+        .await?;
     if !resp.status().is_success() {
         anyhow::bail!("cdnjs version not found: {library}@{version}");
     }
@@ -129,10 +134,11 @@ pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<
         META_CACHE_TTL_SECS,
         async {
             let url = format!("{CDN_NPM_REGISTRY}/-/org/{scope}/package");
-            let client = reqwest::Client::builder()
+            let resp = crate::http::HTTP_CLIENT
+                .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .build()?;
-            let resp = client.get(&url).send().await?;
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Organization not found: @{scope}");
             }

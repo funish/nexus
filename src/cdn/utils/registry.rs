@@ -62,22 +62,28 @@ pub async fn fetch_github_tags(
         &format!("registry/gh/{owner}/{repo}/tags"),
         META_CACHE_TTL_SECS,
         async {
-            let url = format!("https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}");
-            let resp = crate::http::HTTP_CLIENT
+            // GitHub tags API returns the *original* tag names (e.g. "v5.3.3"), which
+            // raw.githubusercontent.com and codeload refs require. The jsDelivr
+            // packages API normalizes away the "v" prefix and would 404 against GitHub
+            // when building tarball/raw URLs.
+            let url = format!("https://api.github.com/repos/{owner}/{repo}/tags?per_page=100");
+            let mut req = crate::http::HTTP_CLIENT
                 .get(&url)
-                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .send()
-                .await?;
+                .header("Accept", "application/vnd.github+json")
+                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS));
+            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+                req = req.header("Authorization", format!("Bearer {token}"));
+            }
+            let resp = req.send().await?;
             if !resp.status().is_success() {
                 anyhow::bail!("GitHub repo not found: {owner}/{repo}");
             }
             let data: Value = resp.json().await?;
             Ok::<Vec<String>, anyhow::Error>(
-                data["versions"]
-                    .as_array()
+                data.as_array()
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|v| v["version"].as_str().map(String::from))
+                            .filter_map(|t| t["name"].as_str().map(String::from))
                             .collect()
                     })
                     .unwrap_or_default(),

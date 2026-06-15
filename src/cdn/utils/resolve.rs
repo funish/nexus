@@ -78,14 +78,19 @@ pub fn resolve_from_tags(tags: &[String], requested: &str) -> Option<String> {
     // as-is — matching gh/[...path].ts, which only resolves to the latest tag when
     // the caller passes no version at all. Falling back to the latest tag here would
     // turn a `@main` request into the newest release.
+    //
+    // Return the *original* tag string (preserving any "v" prefix) — callers build
+    // raw.githubusercontent.com and codeload refs from it, which need the literal git
+    // tag. `max.to_string()` would drop the "v" and 404 against GitHub.
     if let Ok(range) = requested.parse::<Range>()
-        && let Some(max) = tags
+        && let Some(original) = tags
             .iter()
-            .filter_map(|t| t.parse::<Version>().ok())
-            .filter(|v| v.satisfies(&range))
-            .max()
+            .filter_map(|t| t.parse::<Version>().ok().map(|v| (v, t)))
+            .filter(|(v, _)| v.satisfies(&range))
+            .max_by_key(|(v, _)| v.clone())
+            .map(|(_, t)| t.to_string())
     {
-        return Some(max.to_string());
+        return Some(original);
     }
 
     None

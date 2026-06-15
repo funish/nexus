@@ -1,6 +1,7 @@
 //! CDN utilities — route-agnostic logic shared across handlers.
 
 pub mod cache;
+pub mod concurrency;
 pub mod constants;
 pub mod entry;
 pub mod esm;

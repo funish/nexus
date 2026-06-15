@@ -58,6 +58,13 @@ where
     {
         return Ok(v);
     }
+    // Acquire a download slot only on a cache miss — the real network fetch
+    // happens here, and this single gate covers every registry metadata call
+    // (npm/jsr/gh/cdnjs/org) routed through cached_json.
+    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+        .acquire()
+        .await
+        .unwrap();
     let v = fetch.await?;
     if let Ok(bytes) = serde_json::to_vec(&v) {
         storage.set_raw(key, &bytes).await;

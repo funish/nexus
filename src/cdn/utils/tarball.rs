@@ -99,11 +99,18 @@ pub fn detect_root_dir(data: &[u8]) -> String {
 }
 
 pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
+    // Cap concurrent outbound fetches so a burst of cache misses doesn't trip
+    // npm's per-IP rate limit (429 / IP block).
+    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+        .acquire()
+        .await
+        .unwrap();
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
         .build()?;
 
-    let resp = client.get(url).send().await.map_err(|e| {
+    let mut resp = client.get(url).send().await.map_err(|e| {
         if e.is_timeout() {
             anyhow::anyhow!("Tarball download timed out")
         } else {
@@ -115,7 +122,30 @@ pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
         anyhow::bail!("Failed to download tarball: {}", resp.status());
     }
 
-    Ok(resp.bytes().await?.to_vec())
+    // Reject before reading the body when the server declares an oversized
+    // Content-Length, then stream with a hard cap so a missing/lying header
+    // (or a huge gh repo tarball) can't exhaust memory or bandwidth. The
+    // post-extract CDN_MAX_PACKAGE_SIZE check in cache_package_from_tarball
+    // still guards the *unpacked* size (tarballs compress).
+    if let Some(len) = resp.content_length()
+        && len > CDN_MAX_PACKAGE_SIZE
+    {
+        anyhow::bail!(
+            "Tarball exceeds {} byte limit (declared {len})",
+            CDN_MAX_PACKAGE_SIZE
+        );
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len() + chunk.len() > CDN_MAX_PACKAGE_SIZE as usize {
+            anyhow::bail!(
+                "Tarball exceeded {} byte limit while streaming",
+                CDN_MAX_PACKAGE_SIZE
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 pub async fn extract_file_from_tarball(
@@ -315,16 +345,33 @@ pub async fn cache_package_from_tarball(
 }
 
 pub async fn try_fetch(url: &str) -> Option<Vec<u8>> {
+    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+        .acquire()
+        .await
+        .ok()?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
         .build()
         .ok()?;
-    let resp = client.get(url).send().await.ok()?;
-    if resp.status().is_success() {
-        resp.bytes().await.ok().map(|b| b.to_vec())
-    } else {
-        None
+    let mut resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
     }
+    // Same streaming size cap as download_tarball: wp zips and gh raw files
+    // flow through here and either can be oversized.
+    if let Some(len) = resp.content_length()
+        && len > CDN_MAX_PACKAGE_SIZE
+    {
+        return None;
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if body.len() + chunk.len() > CDN_MAX_PACKAGE_SIZE as usize {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
 }
 
 fn now_millis() -> u64 {

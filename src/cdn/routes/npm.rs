@@ -90,6 +90,19 @@ pub async fn handle_npm(
     let resolved = resolve_registry_version(&metadata, &version)
         .ok_or_else(|| AppError::not_found("Version not found"))?;
 
+    // Reject oversized packages before downloading anything. npm metadata
+    // carries dist.unpackedSize, so we skip the tarball fetch entirely rather
+    // than downloading tens of MB only to discard it when the unpacked size
+    // exceeds CDN_MAX_PACKAGE_SIZE (e.g. aws-sdk ~94MB, @tensorflow/tfjs ~141MB).
+    if let Some(unpacked) = resolved.version_info["dist"]["unpackedSize"].as_u64()
+        && unpacked > CDN_MAX_PACKAGE_SIZE
+    {
+        return Err(AppError::not_found(format!(
+            "Package {package_name}@{} is too large to serve ({} bytes unpacked)",
+            resolved.version, unpacked
+        )));
+    }
+
     let tarball_url = resolved.version_info["dist"]["tarball"]
         .as_str()
         .ok_or_else(|| AppError::bad_gateway("Missing tarball URL"))?

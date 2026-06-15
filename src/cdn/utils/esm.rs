@@ -66,6 +66,14 @@ pub async fn bundle_esm_package(
 }
 
 async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Result<String> {
+    // Cap concurrent bundles: rolldown is CPU/memory-heavy and each bundle
+    // unpacks the package to a temp dir. Without this a cold-start burst of
+    // distinct packages can OOM the process.
+    let _bundle_permit = super::concurrency::BUNDLE_SEMAPHORE
+        .acquire()
+        .await
+        .unwrap();
+
     let cache_base = format!("cdn/npm/{}/{}", options.package_name, options.version);
 
     let meta = storage.get_meta(&cache_base).await.ok_or_else(|| {

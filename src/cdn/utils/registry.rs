@@ -107,6 +107,10 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
 }
 
 pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
+    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+        .acquire()
+        .await
+        .unwrap();
     let url = format!("https://api.cdnjs.com/libraries/{library}/{version}");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))

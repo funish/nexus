@@ -19,7 +19,7 @@ async fn main() {
         .init();
 
     let config = config::Config::from_env();
-    let storage = storage::create_storage(&config);
+    let storage = storage::create_storage(&config).await;
     let winget_db = winget::utils::db::create_shared_db();
 
     let cors = CorsLayer::new()

@@ -1,5 +1,6 @@
 use super::{CacheMeta, Storage};
 use async_trait::async_trait;
+use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use tracing::error;
 
@@ -9,19 +10,28 @@ pub struct S3Storage {
 }
 
 impl S3Storage {
-    pub fn new(config: &crate::config::Config) -> Self {
-        let aws_config = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-                if let Some(ref endpoint) = config.s3_endpoint {
-                    loader = loader.endpoint_url(endpoint);
-                }
-                if let Some(ref region) = config.s3_region {
-                    loader = loader.region(aws_config::Region::new(region.clone()));
-                }
-                loader.load().await
-            })
-        });
+    pub async fn new(config: &crate::config::Config) -> Self {
+        // Static credentials from config. The S3_* env vars don't match the
+        // AWS_* names aws-config's default chain reads, so without this the
+        // chain falls back to IMDS (169.254.169.254), which is unreachable in
+        // most containers and surfaces as a "dispatch failure" on every request.
+        let credentials = Credentials::new(
+            config.s3_access_key_id.clone().unwrap_or_default(),
+            config.s3_secret_access_key.clone().unwrap_or_default(),
+            None,
+            None,
+            "static",
+        );
+
+        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .credentials_provider(credentials);
+        if let Some(ref endpoint) = config.s3_endpoint {
+            loader = loader.endpoint_url(endpoint);
+        }
+        if let Some(ref region) = config.s3_region {
+            loader = loader.region(aws_config::Region::new(region.clone()));
+        }
+        let aws_config = loader.load().await;
 
         let client = Client::new(&aws_config);
         Self {
@@ -61,19 +71,20 @@ impl Storage for S3Storage {
             .await
         {
             Ok(_) => {}
-            Err(e) => error!("S3 put_raw failed for {key}: {e}"),
+            // {:?} surfaces the full error chain (connector / TLS / DNS / signing);
+            // the short Display form just prints "dispatch failure".
+            Err(e) => error!("S3 put_raw failed for {key}: {e:?}"),
         }
     }
 
     async fn get_meta(&self, key: &str) -> Option<CacheMeta> {
-        // Meta is a "$"-suffixed shadow key (mirrors unstorage's `key + "$"`).
+        // Meta lives at the "$"-suffixed shadow key (mirrors unstorage's `key + "$"`).
         let meta_key = format!("{key}$");
         let data = self.get_raw(&meta_key).await?;
         serde_json::from_slice(&data).ok()
     }
 
     async fn set_meta(&self, key: &str, meta: &CacheMeta) {
-        // Meta is a "$"-suffixed shadow key (mirrors unstorage's `key + "$"`).
         let meta_key = format!("{key}$");
         if let Ok(data) = serde_json::to_vec(meta) {
             self.set_raw(&meta_key, &data).await;

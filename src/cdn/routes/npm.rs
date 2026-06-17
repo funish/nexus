@@ -12,7 +12,7 @@ use crate::cdn::utils::entry::{
 use crate::cdn::utils::esm::{EsmBundleOptions, bundle_esm_package};
 use crate::cdn::utils::listing::{CdnOrgListing, CdnPackageListing, get_directory_listing};
 use crate::cdn::utils::mime::get_content_type;
-use crate::cdn::utils::minify::minify_for;
+use crate::cdn::utils::minify::{minified_entry, minify_for};
 use crate::cdn::utils::registry::fetch_npm_metadata;
 use crate::cdn::utils::resolve::resolve_registry_version;
 use crate::cdn::utils::tarball::{
@@ -222,24 +222,10 @@ pub async fn handle_npm(
                 found.ok_or_else(|| AppError::not_found("Entry file not found"))?
             };
 
-            // jsDelivr: the default file is always minified. Cache the minified bytes
-            // under a "+min/" suffix so repeated entry requests skip the
-            // oxc/lightningcss pass — the expensive part (full parse + rewrite), unlike
-            // the cheap gzip the transport layer already does per-request.
-            let file_data = {
-                let min_key = format!("{cache_base}/+min/{entry_file}");
-                if let Some(minified) = storage.get_raw(&min_key).await {
-                    minified
-                } else {
-                    let minified = minify_for(&entry_file, &original);
-                    let s = storage.clone();
-                    let (k, d) = (min_key, minified.clone());
-                    tokio::spawn(async move {
-                        s.set_raw(&k, &d).await;
-                    });
-                    minified
-                }
-            };
+            // jsDelivr: the default file is always minified. `minified_entry` caches the
+            // result under a "+min/" suffix so repeated entry requests skip the
+            // oxc/lightningcss pass (full parse + rewrite).
+            let file_data = minified_entry(&storage, &cache_base, &entry_file, &original).await;
             let etag = crate::cdn::utils::integrity::calculate_integrity(&file_data);
 
             if headers

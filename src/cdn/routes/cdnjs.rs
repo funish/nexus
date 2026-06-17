@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use crate::cdn::utils::constants::*;
 use crate::cdn::utils::listing::{CdnFile, CdnPackageListing};
 use crate::cdn::utils::mime::get_content_type;
+use crate::cdn::utils::minify::minified_entry;
 use crate::cdn::utils::registry::{fetch_cdnjs_files, fetch_cdnjs_library};
 use crate::cdn::utils::tarball::download_tarball;
 use crate::error::AppError;
@@ -135,8 +136,10 @@ pub async fn handle_cdnjs(
             .as_str()
             .ok_or_else(|| AppError::not_found("No default filename"))?
             .to_string();
-        let file_data =
+        let original =
             get_cdnjs_file(&storage, &library, &version, &filename, &cache_base).await?;
+        // jsDelivr: the default file is always minified (see npm route).
+        let file_data = minified_entry(&storage, &cache_base, &filename, &original).await;
         return Ok(file_response(&filename, file_data, cache_control));
     }
 

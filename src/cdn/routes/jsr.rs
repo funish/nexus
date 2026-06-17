@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 use crate::cdn::utils::constants::*;
 use crate::cdn::utils::listing::{CdnPackageListing, get_directory_listing};
 use crate::cdn::utils::mime::get_content_type;
+use crate::cdn::utils::minify::minified_entry;
 use crate::cdn::utils::registry::fetch_jsr_metadata;
 use crate::cdn::utils::resolve::resolve_registry_version;
 use crate::cdn::utils::tarball::{
@@ -103,7 +104,7 @@ pub async fn handle_jsr(
             return Ok(json_listing(body));
         }
 
-        let file_data = extract_file_from_tarball(
+        let original = extract_file_from_tarball(
             &storage,
             &tarball_url,
             &entry_file,
@@ -113,12 +114,15 @@ pub async fn handle_jsr(
         .await
         .map_err(|_| AppError::not_found(format!("Entry file not found: {entry_file}")))?;
 
-        let integrity = file_integrity(&storage, &cache_base, &entry_file).await;
+        // jsDelivr: the default file is always minified (see npm route). The ETag is
+        // derived from the minified bytes so 304s match what we actually serve.
+        let file_data = minified_entry(&storage, &cache_base, &entry_file, &original).await;
+        let integrity = crate::cdn::utils::integrity::calculate_integrity(&file_data);
         return Ok(serve_file(
             file_data,
             &entry_file,
             cache_control,
-            integrity,
+            Some(integrity),
             resolved_version,
             &headers,
         ));

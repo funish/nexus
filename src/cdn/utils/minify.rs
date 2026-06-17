@@ -93,6 +93,29 @@ pub fn minify_for(filename: &str, code: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Return the always-minified bytes for a default/entry file, caching the result
+/// under a "+min/" key so the oxc/lightningcss pass runs only once. jsDelivr serves
+/// the default file always-minified; npm, jsr and cdnjs share this path. Non-minifiable
+/// types (README, .php, …) pass through unchanged via `minify_for`.
+pub async fn minified_entry(
+    storage: &crate::storage::SharedStorage,
+    cache_base: &str,
+    entry_file: &str,
+    original: &[u8],
+) -> Vec<u8> {
+    let min_key = format!("{cache_base}/+min/{entry_file}");
+    if let Some(cached) = storage.get_raw(&min_key).await {
+        return cached;
+    }
+    let minified = minify_for(entry_file, original);
+    let s = storage.clone();
+    let (k, d) = (min_key, minified.clone());
+    tokio::spawn(async move {
+        s.set_raw(&k, &d).await;
+    });
+    minified
+}
+
 /// If `path` ends with `.min.js`/`.min.css`, return the un-minified variant
 /// (e.g. `foo.min.js` → `foo.js`). Used for jsDelivr-style `.min` synthesis.
 pub fn strip_min_suffix(path: &str) -> Option<String> {

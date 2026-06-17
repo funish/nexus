@@ -8,7 +8,7 @@
 //! - library (resolves latest version + default filename)
 
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use node_semver::{Range, Version};
 use regex::Regex;
@@ -16,9 +16,9 @@ use std::sync::LazyLock;
 
 use crate::cdn::utils::constants::*;
 use crate::cdn::utils::listing::{CdnFile, CdnPackageListing};
-use crate::cdn::utils::mime::get_content_type;
 use crate::cdn::utils::minify::minified_entry;
 use crate::cdn::utils::registry::{fetch_cdnjs_files, fetch_cdnjs_library};
+use crate::cdn::utils::response::file_response;
 use crate::cdn::utils::tarball::download_tarball;
 use crate::error::AppError;
 use crate::storage::{CacheMeta, CdnFileMeta, SharedStorage};
@@ -34,7 +34,7 @@ const CDNJS_CACHE_LISTING: &str = "public, max-age=600";
 pub async fn handle_cdnjs(
     State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
     OriginalUri(uri): OriginalUri,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Result<Response, AppError> {
     if path.is_empty() {
@@ -140,7 +140,7 @@ pub async fn handle_cdnjs(
             get_cdnjs_file(&storage, &library, &version, &filename, &cache_base).await?;
         // jsDelivr: the default file is always minified (see npm route).
         let file_data = minified_entry(&storage, &cache_base, &filename, &original).await;
-        return Ok(file_response(&filename, file_data, cache_control));
+        return Ok(file_response(&filename, &file_data, cache_control, &headers));
     }
 
     // Library root with trailing slash: list all files for the version.
@@ -167,7 +167,7 @@ pub async fn handle_cdnjs(
 
     // Sub-path file with a directory-listing fallback on 404.
     match get_cdnjs_file(&storage, &library, &version, &filepath, &cache_base).await {
-        Ok(file_data) => Ok(file_response(&filepath, file_data, cache_control)),
+        Ok(file_data) => Ok(file_response(&filepath, &file_data, cache_control, &headers)),
         Err(_) => {
             let files = get_cached_file_list(&storage, &cache_base).await;
             let prefix = format!("{filepath}/");
@@ -195,23 +195,6 @@ pub async fn handle_cdnjs(
             Ok(json_listing(body))
         }
     }
-}
-
-/// Build a file response with content-type, cache-control, and Vary headers.
-fn file_response(filename: &str, data: Vec<u8>, cache_control: &'static str) -> Response {
-    let mut resp = (
-        StatusCode::OK,
-        [
-            ("cache-control", cache_control),
-            ("vary", "Accept-Encoding"),
-        ],
-        data,
-    )
-        .into_response();
-    if let Ok(v) = HeaderValue::from_str(&get_content_type(filename)) {
-        resp.headers_mut().insert("content-type", v);
-    }
-    resp
 }
 
 /// Build a JSON directory-listing response.

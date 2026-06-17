@@ -9,13 +9,12 @@
 //! - /cdn/wp/themes/<name>/<version>/<file>
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::HeaderMap;
+use axum::response::Response;
 use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::cdn::utils::constants::{CDN_CACHE_BRANCH, CDN_CACHE_LONG};
-use crate::cdn::utils::mime::get_content_type;
 use crate::cdn::utils::tarball::try_fetch;
 use crate::error::AppError;
 use crate::storage::SharedStorage;
@@ -27,6 +26,7 @@ static PLUGIN_RE: LazyLock<Regex> =
 
 pub async fn handle_wp(
     State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
+    headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Result<Response, AppError> {
     if path.is_empty() {
@@ -79,7 +79,7 @@ pub async fn handle_wp(
 
     // Check cache first.
     if let Some(cached) = storage.get_raw(&cache_key).await {
-        return Ok(file_response(&svn_url, cached, is_trunk));
+        return Ok(file_response(&svn_url, &cached, is_trunk, &headers));
     }
 
     // Try WordPress SVN, then jsDelivr fallback.
@@ -99,20 +99,17 @@ pub async fn handle_wp(
         s.set_raw(&k, &data_for_cache).await;
     });
 
-    Ok(file_response(&svn_url, data, is_trunk))
+    Ok(file_response(&svn_url, &data, is_trunk, &headers))
 }
 
-/// Build a 200 response with content-type and cache-control derived from the URL and ref kind.
-fn file_response(svn_url: &str, data: Vec<u8>, is_trunk: bool) -> Response {
+/// Build a file response, deriving filename/cache-control from the SVN URL and ref kind,
+/// then delegating to the shared ETag/304 builder.
+fn file_response(svn_url: &str, data: &[u8], is_trunk: bool, headers: &HeaderMap) -> Response {
     let filename = svn_url.rsplit('/').next().unwrap_or("");
     let cache_control = if is_trunk {
         CDN_CACHE_BRANCH
     } else {
         CDN_CACHE_LONG
     };
-    let mut resp = (StatusCode::OK, [("cache-control", cache_control)], data).into_response();
-    if let Ok(v) = HeaderValue::from_str(&get_content_type(filename)) {
-        resp.headers_mut().insert("content-type", v);
-    }
-    resp
+    crate::cdn::utils::response::file_response(filename, data, cache_control, headers)
 }

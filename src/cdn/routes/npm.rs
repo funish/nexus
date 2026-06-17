@@ -338,8 +338,9 @@ pub async fn handle_npm(
         }
         Err(_) => {
             // jsDelivr `.min` synthesis: foo.min.js requested but only foo.js exists.
-            if is_cached
-                && let Some(orig) = crate::cdn::utils::minify::strip_min_suffix(&filepath)
+            // Works for cold packages too: extract_file_from_tarball downloads the
+            // tarball and warms it, so the un-minified source is fetched on demand.
+            if let Some(orig) = crate::cdn::utils::minify::strip_min_suffix(&filepath)
                 && let Ok(orig_data) = extract_file_from_tarball(
                     &storage,
                     &tarball_url,

@@ -10,6 +10,7 @@ pub mod listing;
 pub mod mime;
 pub mod minify;
 pub mod registry;
+pub mod response;
 pub mod resolve;
 pub mod singleflight;
 pub mod tarball;

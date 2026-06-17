@@ -5,7 +5,7 @@
 //! directory listings on a trailing-slash root plus a 404 directory fallback.
 
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use node_semver::Version;
 use regex::Regex;
@@ -13,10 +13,10 @@ use std::sync::LazyLock;
 
 use crate::cdn::utils::constants::*;
 use crate::cdn::utils::listing::{CdnPackageListing, get_directory_listing};
-use crate::cdn::utils::mime::get_content_type;
 use crate::cdn::utils::minify::{minify_for, strip_min_suffix};
 use crate::cdn::utils::registry::fetch_github_tags;
 use crate::cdn::utils::resolve::resolve_from_tags;
+use crate::cdn::utils::response::file_response;
 use crate::cdn::utils::tarball::{
     cache_package_from_tarball, extract_file_from_tarball, is_package_cached,
 };
@@ -31,7 +31,7 @@ const GH_CACHE_LISTING: &str = "public, max-age=600";
 pub async fn handle_gh(
     State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
     OriginalUri(uri): OriginalUri,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Result<Response, AppError> {
     let has_trailing_slash = uri.to_string().ends_with('/');
@@ -145,7 +145,7 @@ pub async fn handle_gh(
         .await
         {
             maybe_cache(&storage, &tarball_url, &cache_base, &cache_label, is_cached);
-            return Ok(file_response("README.md", data, cache_control));
+            return Ok(file_response("README.md", &data, cache_control, &headers));
         }
 
         let index_url = format!("{raw_base}/index.js");
@@ -162,7 +162,10 @@ pub async fn handle_gh(
         {
             Ok(data) => {
                 maybe_cache(&storage, &tarball_url, &cache_base, &cache_label, is_cached);
-                Ok(file_response("index.js", data, cache_control))
+                // jsDelivr: the default file is always minified. README above is markdown
+                // (minify_for passes it through); index.js is real JS — minify it.
+                let data = minify_for("index.js", &data);
+                Ok(file_response("index.js", &data, cache_control, &headers))
             }
             Err(_) => Err(AppError::not_found(
                 "No entry file found (README.md or index.js)",
@@ -184,12 +187,13 @@ pub async fn handle_gh(
     {
         Ok(file_data) => {
             maybe_cache(&storage, &tarball_url, &cache_base, &cache_label, is_cached);
-            Ok(file_response(filepath, file_data, cache_control))
+            Ok(file_response(filepath, &file_data, cache_control, &headers))
         }
         Err(_) => {
             // jsDelivr `.min` synthesis: foo.min.js requested but only foo.js exists.
-            if is_cached
-                && let Some(orig) = strip_min_suffix(filepath)
+            // Works for cold packages too: extract_file_from_tarball downloads the
+            // tarball and warms it, so the un-minified source is fetched on demand.
+            if let Some(orig) = strip_min_suffix(filepath)
                 && let Ok(orig_data) = extract_file_from_tarball(
                     &storage,
                     &tarball_url,
@@ -206,7 +210,7 @@ pub async fn handle_gh(
                 tokio::spawn(async move {
                     s.set_raw(&k, &d).await;
                 });
-                return Ok(file_response(filepath, minified, cache_control));
+                return Ok(file_response(filepath, &minified, cache_control, &headers));
             }
 
             if !is_cached {
@@ -240,23 +244,6 @@ pub async fn handle_gh(
             }
         }
     }
-}
-
-/// Build a file response with content-type, cache-control, and Vary headers.
-fn file_response(filename: &str, data: Vec<u8>, cache_control: &'static str) -> Response {
-    let mut resp = (
-        StatusCode::OK,
-        [
-            ("cache-control", cache_control),
-            ("vary", "Accept-Encoding"),
-        ],
-        data,
-    )
-        .into_response();
-    if let Ok(v) = HeaderValue::from_str(&get_content_type(filename)) {
-        resp.headers_mut().insert("content-type", v);
-    }
-    resp
 }
 
 /// Trigger background caching of the full package when not already cached

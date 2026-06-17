@@ -9,6 +9,7 @@
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use node_semver::Version;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -41,12 +42,18 @@ pub async fn handle_combine(
 
     let mut combined: Vec<u8> = Vec::new();
     let mut first_type: Option<String> = None;
+    // Immutable only when every part names an exact version; any latest/range alias can
+    // move, so the combined result must be revalidated (jsDelivr rule).
+    let mut all_exact = true;
 
     for part in &parts {
         match fetch_part(&storage, part).await? {
-            Some((data, content_type)) => {
+            Some((data, content_type, is_exact)) => {
                 if first_type.is_none() {
                     first_type = Some(content_type);
+                }
+                if !is_exact {
+                    all_exact = false;
                 }
                 combined.extend_from_slice(&data);
                 combined.push(b'\n');
@@ -61,10 +68,15 @@ pub async fn handle_combine(
 
     let content_type =
         first_type.unwrap_or_else(|| "application/javascript; charset=utf-8".to_string());
+    let cache_control = if all_exact {
+        CDN_CACHE_LONG
+    } else {
+        CDN_CACHE_TAG
+    };
     let mut resp = (
         StatusCode::OK,
         [
-            ("cache-control", CDN_CACHE_LONG),
+            ("cache-control", cache_control),
             ("vary", "Accept-Encoding"),
         ],
         combined,
@@ -80,7 +92,7 @@ pub async fn handle_combine(
 async fn fetch_part(
     storage: &SharedStorage,
     part: &str,
-) -> Result<Option<(Vec<u8>, String)>, AppError> {
+) -> Result<Option<(Vec<u8>, String, bool)>, AppError> {
     if let Some(caps) = NPM_PART_RE.captures(part) {
         let package = &caps[1];
         let version = caps.get(2).map(|m| m.as_str()).unwrap_or("latest");
@@ -108,7 +120,7 @@ async fn fetch_part(
         )
         .await
         .map_err(|e| AppError::bad_gateway(e.to_string()))?;
-        return Ok(Some((data, get_content_type(filepath))));
+        return Ok(Some((data, get_content_type(filepath), version == resolved.version)));
     }
 
     if let Some(caps) = GH_PART_RE.captures(part) {
@@ -142,7 +154,7 @@ async fn fetch_part(
         )
         .await
         .map_err(|e| AppError::bad_gateway(e.to_string()))?;
-        return Ok(Some((data, get_content_type(filepath))));
+        return Ok(Some((data, get_content_type(filepath), Version::parse(version).is_ok())));
     }
 
     Ok(None)

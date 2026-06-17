@@ -94,6 +94,11 @@ pub async fn handle_gh(
     let raw_base = format!("https://raw.githubusercontent.com/{owner}/{repo}/{resolved_version}");
     let repo_name = format!("{owner}/{repo}");
     let cache_label = format!("gh:{repo_name}@{resolved_version}");
+    // When the raw fast path misses and we fall back to downloading the tarball, warm
+    // the full package reusing those bytes. maybe_cache still covers the direct_url-hit
+    // case (no bytes to reuse then); the PENDING dedup in cache_package_* ensures at
+    // most one tarball download across both spawns.
+    let warm = (!is_cached).then_some((cache_base.as_str(), cache_label.as_str()));
 
     // Repository root.
     if filepath.is_empty() {
@@ -135,7 +140,7 @@ pub async fn handle_gh(
             "README.md",
             &readme_key,
             Some(&readme_url),
-            None,
+            warm,
         )
         .await
         {
@@ -151,7 +156,7 @@ pub async fn handle_gh(
             "index.js",
             &index_key,
             Some(&index_url),
-            None,
+            warm,
         )
         .await
         {
@@ -173,7 +178,7 @@ pub async fn handle_gh(
         filepath,
         &format!("{cache_base}/{filepath}"),
         Some(&file_url),
-        None,
+        warm,
     )
     .await
     {

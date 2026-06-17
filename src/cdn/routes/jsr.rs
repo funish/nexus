@@ -6,7 +6,6 @@
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use node_semver::Version;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -56,7 +55,9 @@ pub async fn handle_jsr(
         .to_string();
 
     let cache_base = format!("cdn/jsr/{package_name}/{}", resolved.version);
-    let cacheable = Version::parse(&resolved.version).is_ok();
+    // Immutable only for an exact-version request; latest/range aliases resolve to an
+    // exact version but can move, so they use the short tag TTL (jsDelivr rule).
+    let cacheable = resolved.version == version;
     let is_cached = is_package_cached(&storage, &cache_base, cacheable).await;
 
     let entry_file = resolve_jsr_entry(&metadata);
@@ -97,7 +98,12 @@ pub async fn handle_jsr(
                         files: vec![],
                     });
             let body = serde_json::to_string(&listing)?;
-            return Ok(json_listing(body));
+            let cache_control = if cacheable {
+                CDN_CACHE_LONG
+            } else {
+                CDN_CACHE_TAG
+            };
+            return Ok(json_listing(body, cache_control));
         }
 
         let original = extract_file_from_tarball(
@@ -164,7 +170,14 @@ pub async fn handle_jsr(
             {
                 Some(listing) => {
                     let body = serde_json::to_string(&listing)?;
-                    Ok(json_listing(body))
+                    Ok(json_listing(
+                        body,
+                        if cacheable {
+                            CDN_CACHE_LONG
+                        } else {
+                            CDN_CACHE_TAG
+                        },
+                    ))
                 }
                 None => Err(AppError::not_found(format!("Path not found: {filepath}"))),
             }
@@ -251,12 +264,12 @@ fn serve_file(
 }
 
 /// Build a JSON directory-listing response.
-fn json_listing(body: String) -> Response {
+fn json_listing(body: String, cache_control: &'static str) -> Response {
     (
         StatusCode::OK,
         [
             ("content-type", "application/json"),
-            ("cache-control", CDN_CACHE_LONG),
+            ("cache-control", cache_control),
             ("vary", "Accept-Encoding"),
         ],
         body,

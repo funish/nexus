@@ -1,7 +1,6 @@
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use node_semver::Version;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -110,7 +109,11 @@ pub async fn handle_npm(
         .to_string();
 
     let cache_base = format!("cdn/npm/{package_name}/{}", resolved.version);
-    let cacheable = Version::parse(&resolved.version).is_ok();
+    // Immutable only when the request named an exact version. A latest/range alias
+    // resolves to an exact version but can move later, so jsDelivr caches those at the
+    // short tag TTL. `version == resolved.version` holds iff resolve matched the request
+    // verbatim; ranges/dist-tags resolve to a different string.
+    let cacheable = version == resolved.version;
     let is_cached = is_package_cached(&storage, &cache_base, cacheable).await;
 
     // +esm bundling
@@ -140,11 +143,19 @@ pub async fn handle_npm(
         .await
         .map_err(|e| AppError::bad_gateway(e.to_string()))?;
 
+        // jsDelivr: an exact version is immutable (1yr); a latest/range alias can
+        // move to a new version, so clients must revalidate — never mark an alias
+        // immutable.
+        let cache_control = if cacheable {
+            CDN_CACHE_LONG
+        } else {
+            CDN_CACHE_TAG
+        };
         return Ok((
             StatusCode::OK,
             [
                 ("content-type", "application/javascript; charset=utf-8"),
-                ("cache-control", CDN_CACHE_LONG),
+                ("cache-control", cache_control),
                 ("vary", "Accept-Encoding"),
                 ("x-resolved-version", &resolved.version),
             ],
@@ -179,11 +190,16 @@ pub async fn handle_npm(
                 files: vec![],
             }))?;
 
+            let cache_control = if cacheable {
+                CDN_CACHE_LONG
+            } else {
+                CDN_CACHE_TAG
+            };
             return Ok((
                 StatusCode::OK,
                 [
                     ("content-type", "application/json"),
-                    ("cache-control", CDN_CACHE_LONG),
+                    ("cache-control", cache_control),
                     ("vary", "Accept-Encoding"),
                     ("x-resolved-version", &resolved.version),
                 ],
@@ -247,7 +263,7 @@ pub async fn handle_npm(
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
             }
 
-            let cache_control = if Version::parse(&resolved.version).is_ok() {
+            let cache_control = if cacheable {
                 CDN_CACHE_LONG
             } else {
                 CDN_CACHE_TAG
@@ -299,7 +315,7 @@ pub async fn handle_npm(
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
             }
 
-            let cache_control = if Version::parse(&resolved.version).is_ok() {
+            let cache_control = if cacheable {
                 CDN_CACHE_LONG
             } else {
                 CDN_CACHE_TAG
@@ -343,7 +359,7 @@ pub async fn handle_npm(
                 });
 
                 let etag = crate::cdn::utils::integrity::calculate_integrity(&minified);
-                let cache_control = if Version::parse(&resolved.version).is_ok() {
+                let cache_control = if cacheable {
                     CDN_CACHE_LONG
                 } else {
                     CDN_CACHE_TAG
@@ -385,7 +401,7 @@ pub async fn handle_npm(
                         )
                         .await
                         {
-                            let cache_control = if Version::parse(&cand).is_ok() {
+                            let cache_control = if cacheable {
                                 CDN_CACHE_LONG
                             } else {
                                 CDN_CACHE_TAG

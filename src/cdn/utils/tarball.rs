@@ -155,6 +155,7 @@ pub async fn extract_file_from_tarball(
     filepath: &str,
     cache_key: &str,
     direct_url: Option<&str>,
+    warm: Option<(&str, &str)>,
 ) -> Result<Vec<u8>> {
     if let Some(cached) = storage.get_raw(cache_key).await {
         return Ok(cached);
@@ -163,12 +164,14 @@ pub async fn extract_file_from_tarball(
     // Single-flight: dedup concurrent cache-miss for the same key so only the
     // leader downloads; followers wait, then re-read storage.
     let storage_for_fn = storage.clone();
+    let warm = warm.map(|(base, label)| (base.to_string(), label.to_string()));
     super::singleflight::run_once(cache_key, || {
         let storage = storage_for_fn.clone();
         let tarball_url = tarball_url.to_string();
         let filepath = filepath.to_string();
         let direct_url = direct_url.map(|u| u.to_string());
         let cache_key = cache_key.to_string();
+        let warm = warm.clone();
         async move {
             // Re-check: another leader may have just cached it.
             if storage.get_raw(&cache_key).await.is_some() {
@@ -201,10 +204,21 @@ pub async fn extract_file_from_tarball(
                     }
                 }
             }
-            if let Ok(tarball) = download_tarball(&tarball_url).await
-                && let Some(data) = extract_file_from_tgz(&tarball, &filepath)
-            {
-                storage.set_raw(&cache_key, &data).await;
+            if let Ok(tarball) = download_tarball(&tarball_url).await {
+                if let Some(data) = extract_file_from_tgz(&tarball, &filepath) {
+                    storage.set_raw(&cache_key, &data).await;
+                }
+                // Warm the full package in the background reusing these bytes, so a
+                // follow-up request for another file (or a directory listing) is served
+                // from cache without re-downloading the tarball. Only the download path
+                // has bytes to reuse; the direct_url fast path above never fetched the
+                // tarball, so gh (which uses direct_url) warms via its own spawn.
+                if let Some((base, label)) = warm {
+                    let storage = storage.clone();
+                    tokio::spawn(async move {
+                        let _ = cache_package_from_bytes(&storage, tarball, &base, &label).await;
+                    });
+                }
             }
         }
     })
@@ -227,56 +241,48 @@ pub async fn is_package_cached(storage: &SharedStorage, cache_base: &str, cachea
         .is_some()
 }
 
-pub async fn cache_package_from_tarball(
+/// Skip if already cached (files present) or recently skipped; otherwise claim the
+/// PENDING slot to dedup concurrent cache jobs. Returns a guard whose drop releases
+/// the slot, or None when nothing should be done.
+async fn try_acquire_cache_slot(
     storage: &SharedStorage,
-    tarball_url: &str,
     cache_base: &str,
-    log_label: &str,
-) -> Result<()> {
+) -> Option<PendingGuard> {
     if let Some(meta) = storage.get_meta(cache_base).await {
         if meta.files.is_some() {
-            return Ok(());
+            return None;
         }
         if let Some(skipped) = meta.skipped_at {
             let now = now_millis();
             if now - skipped < CDN_SKIP_TTL_MS {
-                return Ok(());
+                return None;
             }
         }
     }
 
-    // Deduplicate concurrent cache jobs for the same package (mirrors pendingTarballs).
-    let _guard = {
-        let mut set = PENDING.lock().unwrap();
-        if set.contains(cache_base) {
-            return Ok(());
-        }
-        set.insert(cache_base.to_string());
-        PendingGuard {
-            key: cache_base.to_string(),
-        }
-    };
+    let mut set = PENDING.lock().unwrap();
+    if set.contains(cache_base) {
+        return None;
+    }
+    set.insert(cache_base.to_string());
+    Some(PendingGuard {
+        key: cache_base.to_string(),
+    })
+}
 
-    let tarball_data = match download_tarball(tarball_url).await {
-        Ok(data) => data,
-        Err(e) => {
-            error!("Failed to download tarball for {log_label}: {e}");
-            storage
-                .set_meta(
-                    cache_base,
-                    &CacheMeta {
-                        skipped_at: Some(now_millis()),
-                        ..Default::default()
-                    },
-                )
-                .await;
-            return Ok(());
-        }
-    };
-
-    let root_dir = detect_root_dir(&tarball_data);
+/// Extract every file from an already-obtained tarball into storage and write the
+/// file-list meta. Shared by the download entry point and the byte-reuse warm path.
+/// The caller must hold the PENDING slot (via `try_acquire_cache_slot`) so concurrent
+/// jobs for the same package don't duplicate the extract.
+async fn cache_package_entries(
+    storage: &SharedStorage,
+    tarball_data: &[u8],
+    cache_base: &str,
+    log_label: &str,
+) -> Result<()> {
+    let root_dir = detect_root_dir(tarball_data);
     let root_path = format!("{root_dir}/");
-    let entries = extract_tgz(&tarball_data)?;
+    let entries = extract_tgz(tarball_data)?;
 
     let filtered: Vec<&TarEntry> = entries
         .iter()
@@ -343,6 +349,55 @@ pub async fn cache_package_from_tarball(
         .await;
 
     Ok(())
+}
+
+pub async fn cache_package_from_tarball(
+    storage: &SharedStorage,
+    tarball_url: &str,
+    cache_base: &str,
+    log_label: &str,
+) -> Result<()> {
+    let _guard = match try_acquire_cache_slot(storage, cache_base).await {
+        Some(g) => g,
+        None => return Ok(()),
+    };
+
+    let tarball_data = match download_tarball(tarball_url).await {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Failed to download tarball for {log_label}: {e}");
+            storage
+                .set_meta(
+                    cache_base,
+                    &CacheMeta {
+                        skipped_at: Some(now_millis()),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            return Ok(());
+        }
+    };
+
+    cache_package_entries(storage, &tarball_data, cache_base, log_label).await
+}
+
+/// Cache a full package from tarball bytes the caller already downloaded (e.g. the
+/// foreground sub-path request that extracted one file). Avoids a second tarball
+/// download for the background warm path. Same skip/dedup semantics as
+/// `cache_package_from_tarball`.
+pub async fn cache_package_from_bytes(
+    storage: &SharedStorage,
+    tarball_data: Vec<u8>,
+    cache_base: &str,
+    log_label: &str,
+) -> Result<()> {
+    let _guard = match try_acquire_cache_slot(storage, cache_base).await {
+        Some(g) => g,
+        None => return Ok(()),
+    };
+
+    cache_package_entries(storage, &tarball_data, cache_base, log_label).await
 }
 
 pub async fn try_fetch(url: &str) -> Option<Vec<u8>> {

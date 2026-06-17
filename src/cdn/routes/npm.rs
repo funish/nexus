@@ -16,7 +16,8 @@ use crate::cdn::utils::minify::{minified_entry, minify_for};
 use crate::cdn::utils::registry::fetch_npm_metadata;
 use crate::cdn::utils::resolve::resolve_registry_version;
 use crate::cdn::utils::tarball::{
-    cache_package_from_tarball, extract_file_from_tarball, is_package_cached,
+    cache_package_from_bytes, cache_package_from_tarball, download_tarball,
+    extract_file_from_tarball, extract_file_from_tgz, is_package_cached,
 };
 use crate::error::AppError;
 use crate::storage::SharedStorage;
@@ -192,26 +193,16 @@ pub async fn handle_npm(
         } else {
             // Entry file — jsDelivr priority (jsdelivr > browser > main, then CSS `style`),
             // then common fallback filenames tried against the actual package contents.
-            // Cache the whole package up front (one tarball download) instead of the old
-            // single-file extract + background full-cache, which downloaded the tarball
-            // twice for the same request.
-            if !is_cached {
-                cache_package_from_tarball(
-                    &storage,
-                    &tarball_url,
-                    &cache_base,
-                    &format!("npm:{package_name}@{}", resolved.version),
-                )
-                .await
-                .map_err(|e| AppError::bad_gateway(e.to_string()))?;
-            }
-
             let entry_candidates = resolve_default_file(&resolved.version_info)
                 .or_else(|| resolve_style_file(&resolved.version_info))
                 .into_iter()
                 .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()));
 
-            let (entry_file, original) = {
+            // For a cached package, read candidates from storage. For a cold package,
+            // download the tarball once, return the first candidate present, and warm the
+            // full package in the background reusing those bytes — so the response returns
+            // as soon as the entry file is extracted, not after caching the whole package.
+            let (entry_file, original) = if is_cached {
                 let mut found = None;
                 for cand in entry_candidates {
                     if let Some(data) = storage.get_raw(&format!("{cache_base}/{cand}")).await {
@@ -220,6 +211,26 @@ pub async fn handle_npm(
                     }
                 }
                 found.ok_or_else(|| AppError::not_found("Entry file not found"))?
+            } else {
+                let bytes = download_tarball(&tarball_url)
+                    .await
+                    .map_err(|e| AppError::bad_gateway(e.to_string()))?;
+                let mut found = None;
+                for cand in entry_candidates {
+                    if let Some(data) = extract_file_from_tgz(&bytes, &cand) {
+                        found = Some((cand, data));
+                        break;
+                    }
+                }
+                let (entry_file, original) =
+                    found.ok_or_else(|| AppError::not_found("Entry file not found"))?;
+                let s = storage.clone();
+                let b = cache_base.clone();
+                let l = format!("npm:{package_name}@{}", resolved.version);
+                tokio::spawn(async move {
+                    let _ = cache_package_from_bytes(&s, bytes, &b, &l).await;
+                });
+                (entry_file, original)
             };
 
             // jsDelivr: the default file is always minified. `minified_entry` caches the
@@ -260,27 +271,22 @@ pub async fn handle_npm(
         }
     }
 
-    // Sub-path file
+    // Sub-path file. For a cold package, `extract_file_from_tarball` warms the full
+    // package in the background reusing the downloaded bytes, so no separate spawn
+    // (and no second tarball download) is needed here.
+    let warm_label = format!("npm:{package_name}@{}", resolved.version);
+    let warm = (!is_cached).then_some((cache_base.as_str(), warm_label.as_str()));
     match extract_file_from_tarball(
         &storage,
         &tarball_url,
         &filepath,
         &format!("{cache_base}/{filepath}"),
         None,
+        warm,
     )
     .await
     {
         Ok(file_data) => {
-            if !is_cached {
-                let storage_clone = storage.clone();
-                let url = tarball_url.clone();
-                let base = cache_base.clone();
-                let label = format!("npm:{package_name}@{}", resolved.version);
-                tokio::spawn(async move {
-                    let _ = cache_package_from_tarball(&storage_clone, &url, &base, &label).await;
-                });
-            }
-
             // ETag check
             if let Some(meta) = storage.get_meta(&cache_base).await
                 && let Some(files) = &meta.files
@@ -323,6 +329,7 @@ pub async fn handle_npm(
                     &tarball_url,
                     &orig,
                     &format!("{cache_base}/{orig}"),
+                    None,
                     None,
                 )
                 .await
@@ -373,6 +380,7 @@ pub async fn handle_npm(
                             tb,
                             &filepath,
                             &format!("{cand_base}/{filepath}"),
+                            None,
                             None,
                         )
                         .await

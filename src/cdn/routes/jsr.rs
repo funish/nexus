@@ -67,16 +67,12 @@ pub async fn handle_jsr(
         CDN_CACHE_TAG
     };
 
-    // Background-cache the entire package when not yet cached.
-    if !is_cached {
-        let s = storage.clone();
-        let u = tarball_url.clone();
-        let b = cache_base.clone();
-        let l = format!("jsr:{package_name}@{resolved_version}");
-        tokio::spawn(async move {
-            let _ = cache_package_from_tarball(&s, &u, &b, &l).await;
-        });
-    }
+    // The foreground entry/sub-path request downloads the tarball; extract_file_from_tarball
+    // warms the full package in the background reusing those bytes (no second download),
+    // so no upfront background spawn is needed. Directory-listing requests still cache
+    // the whole package up front below.
+    let warm_label = format!("jsr:{package_name}@{resolved_version}");
+    let warm = (!is_cached).then_some((cache_base.as_str(), warm_label.as_str()));
 
     // Package root: trailing slash -> directory listing; otherwise entry file.
     if filepath.is_empty() {
@@ -110,6 +106,7 @@ pub async fn handle_jsr(
             &entry_file,
             &format!("{cache_base}/{entry_file}"),
             None,
+            warm,
         )
         .await
         .map_err(|_| AppError::not_found(format!("Entry file not found: {entry_file}")))?;
@@ -135,6 +132,7 @@ pub async fn handle_jsr(
         filepath,
         &format!("{cache_base}/{filepath}"),
         None,
+        warm,
     )
     .await
     {

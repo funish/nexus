@@ -135,6 +135,7 @@ pub async fn handle_gh(
             "README.md",
             &readme_key,
             Some(&readme_url),
+            None,
         )
         .await
         {
@@ -150,6 +151,7 @@ pub async fn handle_gh(
             "index.js",
             &index_key,
             Some(&index_url),
+            None,
         )
         .await
         {
@@ -171,6 +173,7 @@ pub async fn handle_gh(
         filepath,
         &format!("{cache_base}/{filepath}"),
         Some(&file_url),
+        None,
     )
     .await
     {
@@ -188,6 +191,7 @@ pub async fn handle_gh(
                     &orig,
                     &format!("{cache_base}/{orig}"),
                     Some(&format!("{raw_base}/{orig}")),
+                    None,
                 )
                 .await
             {

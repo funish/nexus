@@ -211,7 +211,7 @@ pub async fn handle_npm(
                 .into_iter()
                 .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()));
 
-            let (entry_file, file_data) = {
+            let (entry_file, original) = {
                 let mut found = None;
                 for cand in entry_candidates {
                     if let Some(data) = storage.get_raw(&format!("{cache_base}/{cand}")).await {
@@ -222,8 +222,24 @@ pub async fn handle_npm(
                 found.ok_or_else(|| AppError::not_found("Entry file not found"))?
             };
 
-            // jsDelivr: the default file is always minified.
-            let file_data = minify_for(&entry_file, &file_data);
+            // jsDelivr: the default file is always minified. Cache the minified bytes
+            // under a "+min/" suffix so repeated entry requests skip the
+            // oxc/lightningcss pass — the expensive part (full parse + rewrite), unlike
+            // the cheap gzip the transport layer already does per-request.
+            let file_data = {
+                let min_key = format!("{cache_base}/+min/{entry_file}");
+                if let Some(minified) = storage.get_raw(&min_key).await {
+                    minified
+                } else {
+                    let minified = minify_for(&entry_file, &original);
+                    let s = storage.clone();
+                    let (k, d) = (min_key, minified.clone());
+                    tokio::spawn(async move {
+                        s.set_raw(&k, &d).await;
+                    });
+                    minified
+                }
+            };
             let etag = crate::cdn::utils::integrity::calculate_integrity(&file_data);
 
             if headers

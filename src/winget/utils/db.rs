@@ -166,32 +166,16 @@ pub async fn get_search_index(
         return Ok(idx);
     }
 
-    // Slow path: ensure the db is loaded (refresh/load both build the index).
-    let _conn = get_index_db(db, storage).await?;
-    {
+    // Slow path: ensure the db is loaded — both the refresh and load branches
+    // build the index and store it on the cache, so it is guaranteed present now.
+    get_index_db(db, storage).await?;
+    let index = {
         let guard = db.lock().unwrap();
-        if let Some(ref cached) = *guard
-            && let Some(ref idx) = cached.search_index
-        {
-            return Ok(idx.clone());
-        }
-    }
-
-    // Fallback: build on the spot (refresh/load should have built it; defensive).
-    let conn = {
-        let guard = db.lock().unwrap();
-        let path = guard.as_ref().expect("db should be loaded").db_path.clone();
-        drop(guard);
-        open_db(&path)?
+        guard
+            .as_ref()
+            .and_then(|c| c.search_index.clone())
+            .ok_or_else(|| anyhow::anyhow!("search index missing after db load"))?
     };
-    let index = Arc::new(build_search_index(&conn)?);
-    persist_search_index(storage, &index).await;
-    {
-        let mut guard = db.lock().unwrap();
-        if let Some(ref mut cached) = *guard {
-            cached.search_index = Some(index.clone());
-        }
-    }
     Ok(index)
 }
 

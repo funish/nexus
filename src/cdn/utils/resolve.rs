@@ -47,6 +47,21 @@ pub fn resolve_registry_version(metadata: &Value, requested: &str) -> Option<Res
     })
 }
 
+/// Highest semver version among `all` (raw version strings) that satisfies the
+/// npm range `requested`. Mirrors node-semver `maxSatisfying`; returns the chosen
+/// version string. `None` when `requested` is not a range or nothing satisfies it.
+/// Used by cdnjs version resolution (range match / latest fallback).
+pub fn max_satisfying(all: &[String], requested: &str) -> Option<String> {
+    let Ok(range) = requested.parse::<Range>() else {
+        return None;
+    };
+    all.iter()
+        .filter_map(|s| s.parse::<Version>().ok())
+        .filter(|v| v.satisfies(&range))
+        .max()
+        .map(|v| v.to_string())
+}
+
 /// All versions satisfying a semver range, newest first. Empty when `requested`
 /// is not a range (exact version / dist-tag). Used for jsDelivr-style version
 /// fallback: when the newest matching version lacks a file, try older ones.

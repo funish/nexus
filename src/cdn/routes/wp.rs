@@ -111,5 +111,5 @@ fn file_response(svn_url: &str, data: &[u8], is_trunk: bool, headers: &HeaderMap
     } else {
         CDN_CACHE_LONG
     };
-    crate::cdn::utils::response::file_response(filename, data, cache_control, headers)
+    crate::cdn::utils::response::file_response(filename, data, cache_control, headers, None)
 }

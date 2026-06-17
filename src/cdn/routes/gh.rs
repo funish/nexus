@@ -26,8 +26,6 @@ use crate::storage::SharedStorage;
 static GH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([^/]+)/([^@/]+)(?:@([^/]+))?(?:/(.*))?$").unwrap());
 
-const GH_CACHE_LISTING: &str = "public, max-age=600";
-
 pub async fn handle_gh(
     State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
     OriginalUri(uri): OriginalUri,
@@ -66,9 +64,9 @@ pub async fn handle_gh(
     };
 
     // Full commit hash -> raw archive; semver -> tag ref; otherwise -> branch ref.
-    let tarball_url = if resolved_version.len() == 40
-        && resolved_version.chars().all(|c| c.is_ascii_hexdigit())
-    {
+    let is_hash =
+        resolved_version.len() == 40 && resolved_version.chars().all(|c| c.is_ascii_hexdigit());
+    let tarball_url = if is_hash {
         format!("https://codeload.github.com/{owner}/{repo}/tar.gz/{resolved_version}")
     } else if is_semver {
         format!("https://codeload.github.com/{owner}/{repo}/tar.gz/refs/tags/{resolved_version}")
@@ -77,19 +75,17 @@ pub async fn handle_gh(
     };
 
     let cache_base = format!("cdn/gh/{owner}/{repo}/{resolved_version}");
-    let is_cached = is_package_cached(&storage, &cache_base, is_semver).await;
+    let cached_meta = is_package_cached(&storage, &cache_base, is_semver).await;
+    let is_cached = cached_meta.is_some();
     // jsDelivr 3-tier cache: exact version/commit hash -> 1yr (immutable);
     // range/latest alias -> 7d; branch ref -> 12h.
-    let cache_control = {
-        let is_hash =
-            resolved_version.len() == 40 && resolved_version.chars().all(|c| c.is_ascii_hexdigit());
-        if is_hash || (!version_req.is_empty() && Version::parse(version_req).is_ok()) {
-            CDN_CACHE_LONG
-        } else if is_semver {
-            CDN_CACHE_TAG
-        } else {
-            CDN_CACHE_BRANCH
-        }
+    let is_exact_version = !version_req.is_empty() && Version::parse(version_req).is_ok();
+    let cache_control = if is_hash || is_exact_version {
+        CDN_CACHE_LONG
+    } else if is_semver {
+        CDN_CACHE_TAG
+    } else {
+        CDN_CACHE_BRANCH
     };
     let raw_base = format!("https://raw.githubusercontent.com/{owner}/{repo}/{resolved_version}");
     let repo_name = format!("{owner}/{repo}");
@@ -123,7 +119,7 @@ pub async fn handle_gh(
                 StatusCode::OK,
                 [
                     ("content-type", "application/json"),
-                    ("cache-control", GH_CACHE_LISTING),
+                    ("cache-control", CDN_CACHE_SHORT),
                     ("vary", "Accept-Encoding"),
                 ],
                 body,
@@ -145,7 +141,7 @@ pub async fn handle_gh(
         .await
         {
             maybe_cache(&storage, &tarball_url, &cache_base, &cache_label, is_cached);
-            return Ok(file_response("README.md", &data, cache_control, &headers));
+            return Ok(file_response("README.md", &data, cache_control, &headers, None));
         }
 
         let index_url = format!("{raw_base}/index.js");
@@ -165,7 +161,7 @@ pub async fn handle_gh(
                 // jsDelivr: the default file is always minified. README above is markdown
                 // (minify_for passes it through); index.js is real JS — minify it.
                 let data = minify_for("index.js", &data);
-                Ok(file_response("index.js", &data, cache_control, &headers))
+                Ok(file_response("index.js", &data, cache_control, &headers, None))
             }
             Err(_) => Err(AppError::not_found(
                 "No entry file found (README.md or index.js)",
@@ -187,7 +183,14 @@ pub async fn handle_gh(
     {
         Ok(file_data) => {
             maybe_cache(&storage, &tarball_url, &cache_base, &cache_label, is_cached);
-            Ok(file_response(filepath, &file_data, cache_control, &headers))
+            // Reuse the cached per-file integrity as the ETag (the meta was
+            // already loaded by is_package_cached) instead of re-hashing.
+            let etag = cached_meta
+                .as_ref()
+                .and_then(|m| m.files.as_ref())
+                .and_then(|files| files.iter().find(|f| f.name == filepath))
+                .and_then(|f| f.integrity.as_deref());
+            Ok(file_response(filepath, &file_data, cache_control, &headers, etag))
         }
         Err(_) => {
             // jsDelivr `.min` synthesis: foo.min.js requested but only foo.js exists.
@@ -210,7 +213,7 @@ pub async fn handle_gh(
                 tokio::spawn(async move {
                     s.set_raw(&k, &d).await;
                 });
-                return Ok(file_response(filepath, &minified, cache_control, &headers));
+                return Ok(file_response(filepath, &minified, cache_control, &headers, None));
             }
 
             if !is_cached {
@@ -233,7 +236,7 @@ pub async fn handle_gh(
                         StatusCode::OK,
                         [
                             ("content-type", "application/json"),
-                            ("cache-control", GH_CACHE_LISTING),
+                            ("cache-control", CDN_CACHE_SHORT),
                             ("vary", "Accept-Encoding"),
                         ],
                         body,

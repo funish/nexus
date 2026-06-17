@@ -2,8 +2,16 @@ use anyhow::Result;
 use rolldown::{Bundler, BundlerOptions, InputItem, OutputFormat, Platform};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use crate::storage::SharedStorage;
+
+// Bare-import specifiers to rewrite to CDN paths. Compiled once, reused per bundle.
+static IMPORT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"(?:import|export)\*?(?:\s*[\s\S]*?from\s*|)["']([^"']+)["']"#).unwrap()
+});
+static DYNAMIC_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"import\s*\(\s*["']([^"']+)"#).unwrap());
 
 #[derive(Clone)]
 pub struct EsmBundleOptions {
@@ -103,34 +111,30 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
     })?;
     let pkg_json: serde_json::Value = serde_json::from_slice(&pkg_json_data)?;
 
-    // Collect external dependency names
-    let mut externals: Vec<String> = Vec::new();
-    for field in &["dependencies", "peerDependencies"] {
-        if let Some(deps) = pkg_json[*field].as_object() {
-            externals.extend(deps.keys().cloned());
-        }
-    }
+    // Collect dependency entries once: externals are their names, and each entry
+    // with a resolvable range also drives a concurrent version fetch for import
+    // rewriting (esm.sh behavior — newest published version satisfying the range).
+    // Fetches hit the metadata cache, so repeated bundles of the same dep tree
+    // are cheap.
+    let dep_entries: Vec<(String, Option<String>)> = ["dependencies", "peerDependencies"]
+        .iter()
+        .filter_map(|f| pkg_json[*f].as_object())
+        .flatten()
+        .map(|(name, range)| (name.clone(), range.as_str().map(String::from)))
+        .collect();
+    let externals: Vec<String> = dep_entries.iter().map(|(name, _)| name.clone()).collect();
 
-    // Resolve dependency versions for import rewriting: fetch each dep's
-    // metadata and pick the newest published version satisfying the declared
-    // range (esm.sh behavior). The old min-version floor picked stale releases
-    // (e.g. 1.0.0 for ^1.2.0). Fetches run concurrently and hit the metadata
-    // cache, so repeated bundles of the same dep tree are cheap.
     let mut tasks = tokio::task::JoinSet::new();
-    for field in &["dependencies", "peerDependencies"] {
-        if let Some(deps) = pkg_json[*field].as_object() {
-            for (name, range) in deps {
-                if let Some(range_str) = range.as_str()
-                    && let Ok(req) = range_str.parse::<node_semver::Range>()
-                {
-                    let storage = storage.clone();
-                    let name = name.clone();
-                    tasks.spawn(async move {
-                        let v = latest_version_satisfying(&storage, &name, &req).await;
-                        (name, v)
-                    });
-                }
-            }
+    for (name, range_str) in &dep_entries {
+        if let Some(rs) = range_str
+            && let Ok(req) = rs.parse::<node_semver::Range>()
+        {
+            let storage = storage.clone();
+            let name = name.clone();
+            tasks.spawn(async move {
+                let v = latest_version_satisfying(&storage, &name, &req).await;
+                (name, v)
+            });
         }
     }
     let mut dep_versions: HashMap<String, String> = HashMap::new();
@@ -221,15 +225,10 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
 }
 
 fn rewrite_imports(code: &str, deps: &HashMap<String, String>) -> String {
-    let import_re =
-        regex::Regex::new(r#"(?:import|export)\*?(?:\s*[\s\S]*?from\s*|)["']([^"']+)["']"#)
-            .unwrap();
-    let dynamic_re = regex::Regex::new(r#"import\s*\(\s*["']([^"']+)"#).unwrap();
-
     let mut result = code.to_string();
 
     // Rewrite static imports
-    result = import_re
+    result = IMPORT_RE
         .replace_all(&result, |caps: &regex::Captures| {
             let full = &caps[0];
             let spec = &caps[1];
@@ -244,7 +243,7 @@ fn rewrite_imports(code: &str, deps: &HashMap<String, String>) -> String {
         .to_string();
 
     // Rewrite dynamic imports
-    result = dynamic_re
+    result = DYNAMIC_RE
         .replace_all(&result, |caps: &regex::Captures| {
             let full = &caps[0];
             let spec = &caps[1];

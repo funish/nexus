@@ -1,8 +1,8 @@
-//! Shared file-response builder with SRI ETag / If-None-Match 304 support.
+//! Shared file-response builders with SRI ETag / If-None-Match 304 support.
 //!
-//! The npm and jsr routes build their responses inline; gh, cdnjs and wp use this
-//! helper so they get the same client-cache negotiation (ETag + 304) jsDelivr offers
-//! on every response.
+//! All CDN file routes (npm, jsr, gh, cdnjs, wp) build their responses through
+//! these helpers, so every response carries the ETag + 304 client-cache
+//! negotiation jsDelivr offers.
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -33,8 +33,14 @@ pub fn file_response(
     data: &[u8],
     cache_control: &'static str,
     headers: &HeaderMap,
+    etag: Option<&str>,
 ) -> Response {
-    let etag = calculate_integrity(data);
+    // Reuse a precomputed integrity (e.g. from the cached package meta) when
+    // available; otherwise hash the body. Avoids re-running SHA-256 on every
+    // request for a file whose integrity is already cached.
+    let etag = etag
+        .map(str::to_string)
+        .unwrap_or_else(|| calculate_integrity(data));
     if let Some(resp) = if_none_match_304(headers, &etag) {
         return resp;
     }
@@ -50,6 +56,24 @@ pub fn file_response(
         .into_response();
     if let Ok(v) = HeaderValue::from_str(&get_content_type(filename)) {
         resp.headers_mut().insert("content-type", v);
+    }
+    resp
+}
+
+/// Like [`file_response`], but also stamps an `x-resolved-version` header so a
+/// client can see which concrete version an alias/range request resolved to.
+/// Used by the npm/jsr routes.
+pub fn file_response_versioned(
+    filename: &str,
+    data: &[u8],
+    cache_control: &'static str,
+    headers: &HeaderMap,
+    resolved_version: &str,
+    etag: Option<&str>,
+) -> Response {
+    let mut resp = file_response(filename, data, cache_control, headers, etag);
+    if let Ok(v) = HeaderValue::from_str(resolved_version) {
+        resp.headers_mut().insert("x-resolved-version", v);
     }
     resp
 }

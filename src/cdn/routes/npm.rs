@@ -1,7 +1,8 @@
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use crate::cdn::utils::constants::*;
@@ -10,10 +11,10 @@ use crate::cdn::utils::entry::{
 };
 use crate::cdn::utils::esm::{EsmBundleOptions, bundle_esm_package};
 use crate::cdn::utils::listing::{CdnOrgListing, CdnPackageListing, get_directory_listing};
-use crate::cdn::utils::mime::get_content_type;
 use crate::cdn::utils::minify::{minified_entry, minify_for};
 use crate::cdn::utils::registry::fetch_npm_metadata;
 use crate::cdn::utils::resolve::resolve_registry_version;
+use crate::cdn::utils::response::file_response_versioned;
 use crate::cdn::utils::tarball::{
     cache_package_from_bytes, cache_package_from_tarball, download_tarball,
     extract_file_from_tarball, extract_file_from_tgz, is_package_cached,
@@ -114,7 +115,13 @@ pub async fn handle_npm(
     // short tag TTL. `version == resolved.version` holds iff resolve matched the request
     // verbatim; ranges/dist-tags resolve to a different string.
     let cacheable = version == resolved.version;
-    let is_cached = is_package_cached(&storage, &cache_base, cacheable).await;
+    let cache_control = if cacheable {
+        CDN_CACHE_LONG
+    } else {
+        CDN_CACHE_TAG
+    };
+    let cached_meta = is_package_cached(&storage, &cache_base, cacheable).await;
+    let is_cached = cached_meta.is_some();
 
     // +esm bundling
     if filepath == "+esm" {
@@ -137,7 +144,7 @@ pub async fn handle_npm(
             &EsmBundleOptions {
                 package_name: package_name.clone(),
                 version: resolved.version.clone(),
-                entry_point: entry_file,
+                entry_point: entry_file.clone(),
             },
         )
         .await
@@ -146,22 +153,14 @@ pub async fn handle_npm(
         // jsDelivr: an exact version is immutable (1yr); a latest/range alias can
         // move to a new version, so clients must revalidate — never mark an alias
         // immutable.
-        let cache_control = if cacheable {
-            CDN_CACHE_LONG
-        } else {
-            CDN_CACHE_TAG
-        };
-        return Ok((
-            StatusCode::OK,
-            [
-                ("content-type", "application/javascript; charset=utf-8"),
-                ("cache-control", cache_control),
-                ("vary", "Accept-Encoding"),
-                ("x-resolved-version", &resolved.version),
-            ],
-            code,
-        )
-            .into_response());
+        return Ok(file_response_versioned(
+            &entry_file,
+            code.as_bytes(),
+            cache_control,
+            &headers,
+            &resolved.version,
+            None,
+        ));
     }
 
     // Root path
@@ -190,11 +189,6 @@ pub async fn handle_npm(
                 files: vec![],
             }))?;
 
-            let cache_control = if cacheable {
-                CDN_CACHE_LONG
-            } else {
-                CDN_CACHE_TAG
-            };
             return Ok((
                 StatusCode::OK,
                 [
@@ -219,14 +213,28 @@ pub async fn handle_npm(
             // full package in the background reusing those bytes — so the response returns
             // as soon as the entry file is extracted, not after caching the whole package.
             let (entry_file, original) = if is_cached {
-                let mut found = None;
+                // Filter candidates against the cached file list — reuse the meta
+                // is_package_cached already loaded, instead of probing each candidate
+                // with its own get_raw round-trip (or a second get_meta).
+                let file_names: HashSet<String> = cached_meta
+                    .as_ref()
+                    .and_then(|m| m.files.as_ref())
+                    .map(|files| files.iter().map(|f| f.name.clone()).collect())
+                    .unwrap_or_default();
+                let mut chosen = None;
                 for cand in entry_candidates {
-                    if let Some(data) = storage.get_raw(&format!("{cache_base}/{cand}")).await {
-                        found = Some((cand, data));
+                    if file_names.contains(cand.as_str()) {
+                        chosen = Some(cand);
                         break;
                     }
                 }
-                found.ok_or_else(|| AppError::not_found("Entry file not found"))?
+                let entry_file =
+                    chosen.ok_or_else(|| AppError::not_found("Entry file not found"))?;
+                let original = storage
+                    .get_raw(&format!("{cache_base}/{entry_file}"))
+                    .await
+                    .ok_or_else(|| AppError::not_found("Entry file not found"))?;
+                (entry_file, original)
             } else {
                 let bytes = download_tarball(&tarball_url)
                     .await
@@ -253,37 +261,14 @@ pub async fn handle_npm(
             // result under a "+min/" suffix so repeated entry requests skip the
             // oxc/lightningcss pass (full parse + rewrite).
             let file_data = minified_entry(&storage, &cache_base, &entry_file, &original).await;
-            let etag = crate::cdn::utils::integrity::calculate_integrity(&file_data);
-
-            if headers
-                .get("if-none-match")
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v == etag)
-            {
-                return Ok(StatusCode::NOT_MODIFIED.into_response());
-            }
-
-            let cache_control = if cacheable {
-                CDN_CACHE_LONG
-            } else {
-                CDN_CACHE_TAG
-            };
-
-            let mut resp = (
-                StatusCode::OK,
-                [
-                    ("cache-control", cache_control),
-                    ("etag", etag.as_str()),
-                    ("vary", "Accept-Encoding"),
-                    ("x-resolved-version", resolved.version.as_str()),
-                ],
-                file_data,
-            )
-                .into_response();
-            if let Ok(v) = HeaderValue::from_str(&get_content_type(&entry_file)) {
-                resp.headers_mut().insert("content-type", v);
-            }
-            return Ok(resp);
+            return Ok(file_response_versioned(
+                &entry_file,
+                &file_data,
+                cache_control,
+                &headers,
+                &resolved.version,
+                None,
+            ));
         }
     }
 
@@ -303,38 +288,21 @@ pub async fn handle_npm(
     .await
     {
         Ok(file_data) => {
-            // ETag check
-            if let Some(meta) = storage.get_meta(&cache_base).await
-                && let Some(files) = &meta.files
-                && let Some(f) = files.iter().find(|f| f.name == filepath)
-                && let Some(integrity) = &f.integrity
-                && let Some(if_none_match) =
-                    headers.get("if-none-match").and_then(|v| v.to_str().ok())
-                && if_none_match == integrity
-            {
-                return Ok(StatusCode::NOT_MODIFIED.into_response());
-            }
-
-            let cache_control = if cacheable {
-                CDN_CACHE_LONG
-            } else {
-                CDN_CACHE_TAG
-            };
-
-            let mut resp = (
-                StatusCode::OK,
-                [
-                    ("cache-control", cache_control),
-                    ("vary", "Accept-Encoding"),
-                    ("x-resolved-version", resolved.version.as_str()),
-                ],
-                file_data,
-            )
-                .into_response();
-            if let Ok(v) = HeaderValue::from_str(&get_content_type(&filepath)) {
-                resp.headers_mut().insert("content-type", v);
-            }
-            Ok(resp)
+            // Reuse the cached per-file integrity as the ETag (the meta was
+            // already loaded by is_package_cached) instead of re-hashing.
+            let etag = cached_meta
+                .as_ref()
+                .and_then(|m| m.files.as_ref())
+                .and_then(|files| files.iter().find(|f| f.name == filepath))
+                .and_then(|f| f.integrity.as_deref());
+            Ok(file_response_versioned(
+                &filepath,
+                &file_data,
+                cache_control,
+                &headers,
+                &resolved.version,
+                etag,
+            ))
         }
         Err(_) => {
             // jsDelivr `.min` synthesis: foo.min.js requested but only foo.js exists.
@@ -359,27 +327,14 @@ pub async fn handle_npm(
                     s.set_raw(&k, &d).await;
                 });
 
-                let etag = crate::cdn::utils::integrity::calculate_integrity(&minified);
-                let cache_control = if cacheable {
-                    CDN_CACHE_LONG
-                } else {
-                    CDN_CACHE_TAG
-                };
-                let mut resp = (
-                    StatusCode::OK,
-                    [
-                        ("cache-control", cache_control),
-                        ("etag", etag.as_str()),
-                        ("vary", "Accept-Encoding"),
-                        ("x-resolved-version", resolved.version.as_str()),
-                    ],
-                    minified,
-                )
-                    .into_response();
-                if let Ok(v) = HeaderValue::from_str(&get_content_type(&filepath)) {
-                    resp.headers_mut().insert("content-type", v);
-                }
-                return Ok(resp);
+                return Ok(file_response_versioned(
+                    &filepath,
+                    &minified,
+                    cache_control,
+                    &headers,
+                    &resolved.version,
+                    None,
+                ));
             }
 
             // Version fallback (jsDelivr): the newest version matching the range lacks
@@ -402,25 +357,14 @@ pub async fn handle_npm(
                         )
                         .await
                         {
-                            let cache_control = if cacheable {
-                                CDN_CACHE_LONG
-                            } else {
-                                CDN_CACHE_TAG
-                            };
-                            let mut resp = (
-                                StatusCode::OK,
-                                [
-                                    ("cache-control", cache_control),
-                                    ("vary", "Accept-Encoding"),
-                                    ("x-resolved-version", cand.as_str()),
-                                ],
-                                data,
-                            )
-                                .into_response();
-                            if let Ok(v) = HeaderValue::from_str(&get_content_type(&filepath)) {
-                                resp.headers_mut().insert("content-type", v);
-                            }
-                            return Ok(resp);
+                            return Ok(file_response_versioned(
+                                &filepath,
+                                &data,
+                                cache_control,
+                                &headers,
+                                &cand,
+                                None,
+                            ));
                         }
                     }
                 }

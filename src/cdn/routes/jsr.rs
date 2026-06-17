@@ -4,17 +4,17 @@
 //! entry file (or sub-path) with ETag/304 support and a directory-listing fallback.
 
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::cdn::utils::constants::*;
 use crate::cdn::utils::listing::{CdnPackageListing, get_directory_listing};
-use crate::cdn::utils::mime::get_content_type;
 use crate::cdn::utils::minify::minified_entry;
 use crate::cdn::utils::registry::fetch_jsr_metadata;
 use crate::cdn::utils::resolve::resolve_registry_version;
+use crate::cdn::utils::response::file_response_versioned;
 use crate::cdn::utils::tarball::{
     cache_package_from_tarball, extract_file_from_tarball, is_package_cached,
 };
@@ -58,7 +58,8 @@ pub async fn handle_jsr(
     // Immutable only for an exact-version request; latest/range aliases resolve to an
     // exact version but can move, so they use the short tag TTL (jsDelivr rule).
     let cacheable = resolved.version == version;
-    let is_cached = is_package_cached(&storage, &cache_base, cacheable).await;
+    let cached_meta = is_package_cached(&storage, &cache_base, cacheable).await;
+    let is_cached = cached_meta.is_some();
 
     let entry_file = resolve_jsr_entry(&metadata);
     let resolved_version = resolved.version.as_str();
@@ -98,11 +99,6 @@ pub async fn handle_jsr(
                         files: vec![],
                     });
             let body = serde_json::to_string(&listing)?;
-            let cache_control = if cacheable {
-                CDN_CACHE_LONG
-            } else {
-                CDN_CACHE_TAG
-            };
             return Ok(json_listing(body, cache_control));
         }
 
@@ -117,17 +113,15 @@ pub async fn handle_jsr(
         .await
         .map_err(|_| AppError::not_found(format!("Entry file not found: {entry_file}")))?;
 
-        // jsDelivr: the default file is always minified (see npm route). The ETag is
-        // derived from the minified bytes so 304s match what we actually serve.
+        // jsDelivr: the default file is always minified (see npm route).
         let file_data = minified_entry(&storage, &cache_base, &entry_file, &original).await;
-        let integrity = crate::cdn::utils::integrity::calculate_integrity(&file_data);
-        return Ok(serve_file(
-            file_data,
+        return Ok(file_response_versioned(
             &entry_file,
+            &file_data,
             cache_control,
-            Some(integrity),
-            resolved_version,
             &headers,
+            resolved_version,
+            None,
         ));
     }
 
@@ -143,14 +137,20 @@ pub async fn handle_jsr(
     .await
     {
         Ok(file_data) => {
-            let integrity = file_integrity(&storage, &cache_base, filepath).await;
-            Ok(serve_file(
-                file_data,
+            // Reuse the cached per-file integrity as the ETag (the meta was
+            // already loaded by is_package_cached) instead of re-hashing.
+            let etag = cached_meta
+                .as_ref()
+                .and_then(|m| m.files.as_ref())
+                .and_then(|files| files.iter().find(|f| f.name == filepath))
+                .and_then(|f| f.integrity.as_deref());
+            Ok(file_response_versioned(
                 filepath,
+                &file_data,
                 cache_control,
-                integrity,
-                resolved_version,
                 &headers,
+                resolved_version,
+                etag,
             ))
         }
         Err(_) => {
@@ -170,14 +170,7 @@ pub async fn handle_jsr(
             {
                 Some(listing) => {
                     let body = serde_json::to_string(&listing)?;
-                    Ok(json_listing(
-                        body,
-                        if cacheable {
-                            CDN_CACHE_LONG
-                        } else {
-                            CDN_CACHE_TAG
-                        },
-                    ))
+                    Ok(json_listing(body, cache_control))
                 }
                 None => Err(AppError::not_found(format!("Path not found: {filepath}"))),
             }
@@ -203,64 +196,6 @@ fn resolve_jsr_entry(metadata: &serde_json::Value) -> String {
         }
     }
     "mod.ts".to_string()
-}
-
-/// Look up a cached file's integrity (SRI) for use as an ETag.
-async fn file_integrity(storage: &SharedStorage, cache_base: &str, file: &str) -> Option<String> {
-    let meta = storage.get_meta(cache_base).await?;
-    let files = meta.files?;
-    files
-        .iter()
-        .find(|f| f.name == file)
-        .and_then(|f| f.integrity.clone())
-}
-
-/// Serve a file body with ETag/304 handling, content-type, cache-control, and X-Resolved-Version.
-fn serve_file(
-    file_data: Vec<u8>,
-    filename: &str,
-    cache_control: &'static str,
-    integrity: Option<String>,
-    resolved_version: &str,
-    headers: &HeaderMap,
-) -> Response {
-    // 304 short-circuit when the client already holds this exact content.
-    if let Some(ref etag) = integrity {
-        let matches = headers
-            .get("if-none-match")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v == etag.as_str())
-            .unwrap_or(false);
-        if matches {
-            let mut resp = StatusCode::NOT_MODIFIED.into_response();
-            if let Ok(v) = HeaderValue::from_str(etag) {
-                resp.headers_mut().insert("etag", v);
-            }
-            return resp;
-        }
-    }
-
-    let mut resp = (
-        StatusCode::OK,
-        [
-            ("cache-control", cache_control),
-            ("vary", "Accept-Encoding"),
-        ],
-        file_data,
-    )
-        .into_response();
-    if let Ok(v) = HeaderValue::from_str(&get_content_type(filename)) {
-        resp.headers_mut().insert("content-type", v);
-    }
-    if let Some(etag) = integrity
-        && let Ok(v) = HeaderValue::from_str(&etag)
-    {
-        resp.headers_mut().insert("etag", v);
-    }
-    if let Ok(v) = HeaderValue::from_str(resolved_version) {
-        resp.headers_mut().insert("x-resolved-version", v);
-    }
-    resp
 }
 
 /// Build a JSON directory-listing response.

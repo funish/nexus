@@ -120,7 +120,11 @@ async fn fetch_part(
         )
         .await
         .map_err(|e| AppError::bad_gateway(e.to_string()))?;
-        return Ok(Some((data, get_content_type(filepath), version == resolved.version)));
+        return Ok(Some((
+            data,
+            get_content_type(filepath),
+            version == resolved.version,
+        )));
     }
 
     if let Some(caps) = GH_PART_RE.captures(part) {
@@ -154,7 +158,11 @@ async fn fetch_part(
         )
         .await
         .map_err(|e| AppError::bad_gateway(e.to_string()))?;
-        return Ok(Some((data, get_content_type(filepath), Version::parse(version).is_ok())));
+        return Ok(Some((
+            data,
+            get_content_type(filepath),
+            Version::parse(version).is_ok(),
+        )));
     }
 
     Ok(None)

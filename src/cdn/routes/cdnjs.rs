@@ -10,7 +10,7 @@
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use node_semver::{Range, Version};
+use node_semver::Version;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -18,6 +18,7 @@ use crate::cdn::utils::constants::*;
 use crate::cdn::utils::listing::{CdnFile, CdnPackageListing};
 use crate::cdn::utils::minify::minified_entry;
 use crate::cdn::utils::registry::{fetch_cdnjs_files, fetch_cdnjs_library};
+use crate::cdn::utils::resolve::max_satisfying;
 use crate::cdn::utils::response::file_response;
 use crate::cdn::utils::tarball::download_tarball;
 use crate::error::AppError;
@@ -28,8 +29,6 @@ static CDNJS_AT_RE: LazyLock<Regex> =
 
 static VERSION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^v?\d+\.\d+(\.\d+)?(-[^/]+)?$").unwrap());
-
-const CDNJS_CACHE_LISTING: &str = "public, max-age=600";
 
 pub async fn handle_cdnjs(
     State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
@@ -107,7 +106,7 @@ pub async fn handle_cdnjs(
 
             // Fallback to the newest version — mirrors [...all].sort(rcompare)[0].
             if !found {
-                version = latest_version(&all_versions)
+                version = max_satisfying(&all_versions, "*")
                     .unwrap_or_else(|| data["version"].as_str().unwrap_or("").to_string());
             }
         } else {
@@ -136,11 +135,16 @@ pub async fn handle_cdnjs(
             .as_str()
             .ok_or_else(|| AppError::not_found("No default filename"))?
             .to_string();
-        let original =
-            get_cdnjs_file(&storage, &library, &version, &filename, &cache_base).await?;
+        let original = get_cdnjs_file(&storage, &library, &version, &filename, &cache_base).await?;
         // jsDelivr: the default file is always minified (see npm route).
         let file_data = minified_entry(&storage, &cache_base, &filename, &original).await;
-        return Ok(file_response(&filename, &file_data, cache_control, &headers));
+        return Ok(file_response(
+            &filename,
+            &file_data,
+            cache_control,
+            &headers,
+            None,
+        ));
     }
 
     // Library root with trailing slash: list all files for the version.
@@ -167,7 +171,13 @@ pub async fn handle_cdnjs(
 
     // Sub-path file with a directory-listing fallback on 404.
     match get_cdnjs_file(&storage, &library, &version, &filepath, &cache_base).await {
-        Ok(file_data) => Ok(file_response(&filepath, &file_data, cache_control, &headers)),
+        Ok(file_data) => Ok(file_response(
+            &filepath,
+            &file_data,
+            cache_control,
+            &headers,
+            None,
+        )),
         Err(_) => {
             let files = get_cached_file_list(&storage, &cache_base).await;
             let prefix = format!("{filepath}/");
@@ -203,7 +213,7 @@ fn json_listing(body: String) -> Response {
         StatusCode::OK,
         [
             ("content-type", "application/json"),
-            ("cache-control", CDNJS_CACHE_LISTING),
+            ("cache-control", CDN_CACHE_SHORT),
             ("vary", "Accept-Encoding"),
         ],
         body,
@@ -300,24 +310,4 @@ async fn get_cached_file_list(storage: &SharedStorage, cache_base: &str) -> Vec<
         .and_then(|m| m.files)
         .map(|files| files.into_iter().map(|f| f.name).collect())
         .unwrap_or_default()
-}
-
-/// Pick the highest version satisfying a loose specifier (node-semver maxSatisfying).
-/// `node-semver` mirrors npm Range parsing, so bare "3"/"3.7", "^", "~", and
-/// "v"-prefixed specifiers are handled natively — no manual coercion needed.
-fn max_satisfying(all: &[String], requested: &str) -> Option<String> {
-    let range: Range = requested.parse().ok()?;
-    all.iter()
-        .filter_map(|v| v.parse::<Version>().ok())
-        .filter(|v| v.satisfies(&range))
-        .max()
-        .map(|v| v.to_string())
-}
-
-/// Highest version by semver order (node-semver rcompare + first equivalent).
-fn latest_version(all: &[String]) -> Option<String> {
-    all.iter()
-        .filter_map(|v| v.parse::<Version>().ok())
-        .max()
-        .map(|v| v.to_string())
 }

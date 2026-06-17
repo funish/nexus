@@ -1,6 +1,6 @@
 use anyhow::Result;
 use flate2::read::GzDecoder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Read;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -59,18 +59,25 @@ pub fn extract_tgz(data: &[u8]) -> Result<Vec<TarEntry>> {
 }
 
 pub fn extract_file_from_tgz(data: &[u8], filepath: &str) -> Option<Vec<u8>> {
-    // Determine the root dir once with a dedicated scan, then match (mirrors tar.ts:
-    // detectRootDirFromBytes first, then extractFileFromTgz matches against it).
-    let root = detect_root_dir(data);
-    let full_path = format!("{root}/{filepath}");
-
     let decoder = GzDecoder::new(data);
     let mut archive = Archive::new(decoder);
 
+    // Single pass over the gzip stream: derive the root dir from the first real
+    // (non-pax) entry, then match "{root}/{filepath}" as entries stream by. This
+    // avoids decoding the gzip stream twice (a separate detect_root_dir scan plus
+    // a second pass to match the file).
+    let mut root: Option<String> = None;
     for entry in archive.entries().ok()? {
-        let mut entry = entry.ok()?;
-        let path = entry.path().ok()?;
-        if path.to_string_lossy() == full_path {
+        let Ok(mut entry) = entry else { continue };
+        let Ok(path) = entry.path() else { continue };
+        let name = path.to_string_lossy();
+        if root.is_none() && !name.starts_with("pax_global_header") {
+            root = Some(name.split('/').next().unwrap_or("package").to_string());
+        }
+        let Some(root) = root.as_deref() else {
+            continue;
+        };
+        if name == format!("{root}/{filepath}") {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).ok()?;
             return Some(buf);
@@ -78,24 +85,6 @@ pub fn extract_file_from_tgz(data: &[u8], filepath: &str) -> Option<Vec<u8>> {
     }
 
     None
-}
-
-pub fn detect_root_dir(data: &[u8]) -> String {
-    let decoder = GzDecoder::new(data);
-    let mut archive = Archive::new(decoder);
-
-    for entry in archive.entries().into_iter().flatten() {
-        if let Ok(entry) = entry
-            && let Ok(path) = entry.path()
-        {
-            let path_str = path.to_string_lossy();
-            if !path_str.starts_with("pax_global_header") {
-                return path_str.split('/').next().unwrap_or("package").to_string();
-            }
-        }
-    }
-
-    "package".to_string()
 }
 
 pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
@@ -112,12 +101,12 @@ pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
         .send()
         .await
         .map_err(|e| {
-        if e.is_timeout() {
-            anyhow::anyhow!("Tarball download timed out")
-        } else {
-            anyhow::anyhow!("Failed to download tarball: {e}")
-        }
-    })?;
+            if e.is_timeout() {
+                anyhow::anyhow!("Tarball download timed out")
+            } else {
+                anyhow::anyhow!("Failed to download tarball: {e}")
+            }
+        })?;
 
     if !resp.status().is_success() {
         anyhow::bail!("Failed to download tarball: {}", resp.status());
@@ -230,24 +219,26 @@ pub async fn extract_file_from_tarball(
         .ok_or_else(|| anyhow::anyhow!("File not found: {filepath}"))
 }
 
-pub async fn is_package_cached(storage: &SharedStorage, cache_base: &str, cacheable: bool) -> bool {
+/// Returns the cached package meta (with its file list) when the package is
+/// cached and `cacheable`, else `None`. Callers use `.is_some()` as the cached
+/// boolean and can reuse `files[].integrity` as an ETag to avoid re-hashing the
+/// body on every request.
+pub async fn is_package_cached(
+    storage: &SharedStorage,
+    cache_base: &str,
+    cacheable: bool,
+) -> Option<CacheMeta> {
     if !cacheable {
-        return false;
+        return None;
     }
-    storage
-        .get_meta(cache_base)
-        .await
-        .and_then(|m| m.files)
-        .is_some()
+    let meta = storage.get_meta(cache_base).await?;
+    (meta.files.is_some()).then_some(meta)
 }
 
 /// Skip if already cached (files present) or recently skipped; otherwise claim the
 /// PENDING slot to dedup concurrent cache jobs. Returns a guard whose drop releases
 /// the slot, or None when nothing should be done.
-async fn try_acquire_cache_slot(
-    storage: &SharedStorage,
-    cache_base: &str,
-) -> Option<PendingGuard> {
+async fn try_acquire_cache_slot(storage: &SharedStorage, cache_base: &str) -> Option<PendingGuard> {
     if let Some(meta) = storage.get_meta(cache_base).await {
         if meta.files.is_some() {
             return None;
@@ -280,10 +271,16 @@ async fn cache_package_entries(
     cache_base: &str,
     log_label: &str,
 ) -> Result<()> {
-    let root_dir = detect_root_dir(tarball_data);
-    let root_path = format!("{root_dir}/");
     let entries = extract_tgz(tarball_data)?;
 
+    // Derive root from the first real entry (pax_global_header is tar metadata,
+    // not a package path), then keep only entries under it.
+    let root_dir = entries
+        .iter()
+        .find(|e| !e.name.starts_with("pax_global_header"))
+        .map(|e| e.name.split('/').next().unwrap_or("package").to_string())
+        .unwrap_or_else(|| "package".to_string());
+    let root_path = format!("{root_dir}/");
     let filtered: Vec<&TarEntry> = entries
         .iter()
         .filter(|e| e.name.starts_with(&root_path))
@@ -317,25 +314,13 @@ async fn cache_package_entries(
         return Ok(());
     }
 
-    let mut file_index: HashMap<String, usize> = HashMap::new();
-    for (i, f) in file_list.iter().enumerate() {
-        file_index.insert(f.name.clone(), i);
-    }
-
-    for entry in &filtered {
+    // PENDING slot guarantees no concurrent job caches the same package, so every
+    // key here is fresh — write directly without a per-file get_raw pre-check.
+    for (i, entry) in filtered.iter().enumerate() {
         let relative = &entry.name[root_path.len()..];
         let key = format!("{cache_base}/{relative}");
-
-        if storage.get_raw(&key).await.is_some() {
-            continue;
-        }
-
         storage.set_raw(&key, &entry.data).await;
-
-        let integrity = calculate_integrity(&entry.data);
-        if let Some(&idx) = file_index.get(relative) {
-            file_list[idx].integrity = Some(integrity);
-        }
+        file_list[i].integrity = Some(calculate_integrity(&entry.data));
     }
 
     storage

@@ -11,8 +11,8 @@ Nexus is a Rust-based CDN service that proxies npm/JSR/GitHub packages, converts
 | JS minify | **oxc** | Single-file JS/TS minification (same toolchain as rolldown, pinned 0.135) |
 | CSS minify | **lightningcss** | CSS minification |
 | SQLite | **rusqlite** | WinGet index.db queries |
-| Storage | **tokio::fs** + **aws-sdk-s3** | Local cache + S3 for distributed deployments |
-| Tar | **tar** + **flate2** | .tgz extraction |
+| Storage | **tokio::fs** + **rust-s3** | Local cache + S3-compatible (RustFS) for distributed deployments |
+| Tar | **tar** + **flate2** (zlib-rs backend) | .tgz extraction |
 | Hash | **sha2** | SHA-256 integrity (SRI) |
 | HTTP client | **reqwest** | npm registry + tarball fetching |
 | Serialization | **serde** + **serde_json** | JSON handling |
@@ -74,7 +74,7 @@ src/
 
 ```bash
 cargo build              # Debug build
-cargo build --release    # Release build
+cargo build --release    # Release build (LTO=fat, codegen-units=1, panic=abort)
 cargo run                # Run debug build
 cargo test               # Run tests
 cargo clippy             # Lint
@@ -127,7 +127,7 @@ trait Storage {
 ```
 
 - **Development**: Filesystem (`.cache/` directory)
-- **Production**: S3 (if `S3_ACCESS_KEY_ID` etc. are set), otherwise filesystem
+- **Production**: S3-compatible (RustFS) via `rust-s3` (if `S3_ACCESS_KEY_ID` etc. are set), otherwise filesystem. `rust-s3` reuses the shared reqwest/rustls/hyper-1.x HTTP stack rather than pulling in the AWS SDK's duplicate runtime.
 
 ### jsDelivr alignment
 

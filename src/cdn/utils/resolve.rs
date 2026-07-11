@@ -17,14 +17,13 @@ pub fn resolve_registry_version(metadata: &Value, requested: &str) -> Option<Res
 
     // 2. Semver range match (npm flavor via node-semver: bare "3"/"3.7", "^", "~", ...)
     if let Ok(range) = requested.parse::<Range>() {
-        let versions: Vec<&str> = metadata["versions"]
+        // Iterate keys directly — no intermediate Vec allocation. For packages with
+        // thousands of versions this avoids a per-request heap alloc on the hot path.
+        if let Some(max) = metadata["versions"]
             .as_object()
-            .map(|obj| obj.keys().map(|s| s.as_str()).collect())
-            .unwrap_or_default();
-
-        if let Some(max) = versions
-            .iter()
-            .filter_map(|v| v.parse::<Version>().ok())
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, _)| k.parse::<Version>().ok())
             .filter(|v| v.satisfies(&range))
             .max()
         {

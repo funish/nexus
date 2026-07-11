@@ -84,9 +84,9 @@ pub async fn fetch_manifest_content(
     Ok(content)
 }
 
-/// Parse YAML content into a JSON value (confbox parseYAML equivalent via serde_yml).
+/// Parse YAML content into a JSON value (confbox parseYAML equivalent via serde_yaml).
 pub fn parse_yaml(content: &str) -> Result<Value> {
-    Ok(serde_yml::from_str::<Value>(content)?)
+    Ok(serde_yaml::from_str::<Value>(content)?)
 }
 
 /// Discover all .yaml manifest paths for a package version (mirrors getVersionManifests).

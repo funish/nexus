@@ -1,79 +1,69 @@
 use super::{CacheMeta, Storage};
 use async_trait::async_trait;
-use aws_credential_types::Credentials;
-use aws_sdk_s3::Client;
+use s3::bucket::Bucket;
+use s3::creds::Credentials;
+use s3::region::Region;
 use tracing::error;
 
+/// S3-compatible object storage backend (RustFS, MinIO, etc.) via the lightweight
+/// `rust-s3` crate — reuses the shared reqwest/rustls/hyper-1.x HTTP stack instead
+/// of aws-sdk-s3's duplicate runtime.
 pub struct S3Storage {
-    client: Client,
-    bucket: String,
+    bucket: Box<Bucket>,
 }
 
 impl S3Storage {
-    pub async fn new(config: &crate::config::Config) -> Self {
-        // Static credentials from config. The S3_* env vars don't match the
-        // AWS_* names aws-config's default chain reads, so without this the
-        // chain falls back to IMDS (169.254.169.254), which is unreachable in
-        // most containers and surfaces as a "dispatch failure" on every request.
+    pub fn new(config: &crate::config::Config) -> Self {
         let credentials = Credentials::new(
-            config.s3_access_key_id.clone().unwrap_or_default(),
-            config.s3_secret_access_key.clone().unwrap_or_default(),
+            config.s3_access_key_id.as_deref(),
+            config.s3_secret_access_key.as_deref(),
             None,
             None,
-            "static",
-        );
+            None,
+        )
+        .expect("failed to build S3 credentials");
 
-        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .credentials_provider(credentials);
-        if let Some(ref endpoint) = config.s3_endpoint {
-            loader = loader.endpoint_url(endpoint);
-        }
-        if let Some(ref region) = config.s3_region {
-            loader = loader.region(aws_config::Region::new(region.clone()));
-        }
-        let aws_config = loader.load().await;
+        // Region::Custom points rust-s3 at a self-hosted endpoint (RustFS) instead of
+        // AWS. Path-style addressing (`/<bucket>/<key>`) is RustFS's default.
+        let region = Region::Custom {
+            region: config
+                .s3_region
+                .clone()
+                .unwrap_or_else(|| "us-east-1".to_string()),
+            endpoint: config.s3_endpoint.clone().expect("S3_ENDPOINT is required"),
+        };
 
-        let client = Client::new(&aws_config);
-        Self {
-            client,
-            bucket: config.s3_bucket.clone().unwrap_or_default(),
-        }
+        let bucket = Bucket::new(
+            config
+                .s3_bucket
+                .clone()
+                .expect("S3_BUCKET is required")
+                .as_str(),
+            region,
+            credentials,
+        )
+        .expect("failed to build S3 bucket")
+        .with_path_style();
+
+        Self { bucket }
     }
 }
 
 #[async_trait]
 impl Storage for S3Storage {
     async fn get_raw(&self, key: &str) -> Option<Vec<u8>> {
-        match self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-        {
-            Ok(output) => {
-                let bytes = output.body.collect().await.ok()?.into_bytes();
-                Some(bytes.to_vec())
-            }
-            Err(_) => None,
+        match self.bucket.get_object(key).await {
+            Ok(resp) if resp.status_code() == 200 => Some(resp.to_vec()),
+            // 404 (NoSuchKey) and auth/connector errors are all cache misses here —
+            // distinguishing them would only matter for surfacing a 5xx, but the
+            // trait contract returns Option so callers treat both as "not cached".
+            _ => None,
         }
     }
 
     async fn set_raw(&self, key: &str, data: &[u8]) {
-        match self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .body(data.to_vec().into())
-            .send()
-            .await
-        {
-            Ok(_) => {}
-            // {:?} surfaces the full error chain (connector / TLS / DNS / signing);
-            // the short Display form just prints "dispatch failure".
-            Err(e) => error!("S3 put_raw failed for {key}: {e:?}"),
+        if let Err(e) = self.bucket.put_object(key, data).await {
+            error!("S3 put_raw failed for {key}: {e:?}");
         }
     }
 

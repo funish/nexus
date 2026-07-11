@@ -144,42 +144,67 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
         }
     }
 
-    // Extract all cached files to temp directory
+    // Read every cached file into memory first (async), so the blocking extract step
+    // never touches the async storage layer.
     let files = meta.files.unwrap_or_default();
-    let tmp_dir = tempfile::tempdir()?;
-    let tmp_path = tmp_dir.path();
-
+    let mut file_bytes: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
     for file in &files {
         let cache_key = format!("{cache_base}/{}", file.name);
         if let Some(data) = storage.get_raw(&cache_key).await {
-            let file_path = tmp_path.join(&file.name);
-            if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(file_path, data)?;
+            file_bytes.push((file.name.clone(), data));
         }
     }
 
     let entry = options
         .entry_point
         .strip_prefix("./")
-        .unwrap_or(&options.entry_point);
-    // Use the declared entry when present; otherwise fall back to common entry
-    // filenames that actually exist in the extracted package.
-    let entry_path = tmp_path.join(entry);
-    let entry_path = if entry_path.exists() {
-        entry_path
-    } else {
-        crate::cdn::utils::entry::ENTRY_FALLBACKS
-            .iter()
-            .map(|c| tmp_path.join(c))
-            .find(|p| p.exists())
-            .ok_or_else(|| anyhow::anyhow!("Entry point {entry} not found in extracted files"))?
-    };
+        .unwrap_or(&options.entry_point)
+        .to_string();
+    let entry_fallbacks: Vec<String> = crate::cdn::utils::entry::ENTRY_FALLBACKS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    // BLOCKING: write all files to a temp dir and resolve the entry path. std::fs is
+    // synchronous — off the async worker thread so it never stalls a request.
+    // `_tmp_dir` keeps the TempDir alive (its Drop deletes the dir) for the whole
+    // bundling step — naming it `_tmp_dir` rather than `_` preserves it until scope end.
+    let (_tmp_dir, tmp_path_buf, entry_path) =
+        tokio::task::spawn_blocking(move || -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
+            let tmp_dir = tempfile::tempdir()?;
+            let tmp_path_buf = tmp_dir.path().to_path_buf();
+
+            for (name, data) in &file_bytes {
+                let file_path = tmp_dir.path().join(name);
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(file_path, data)?;
+            }
+
+            // Use the declared entry when present; otherwise fall back to common entry
+            // filenames that actually exist in the extracted package.
+            let entry_path = tmp_dir.path().join(&entry);
+            let entry_path = if entry_path.exists() {
+                entry_path
+            } else {
+                entry_fallbacks
+                    .iter()
+                    .map(|c| tmp_dir.path().join(c))
+                    .find(|p| p.exists())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Entry point {entry} not found in extracted files")
+                    })?
+            };
+            Ok((tmp_dir, tmp_path_buf, entry_path))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("extract task panicked: {e}"))??;
+
+    let tmp_path = tmp_path_buf.as_path();
 
     // Configure rolldown bundler
     let out_dir = tmp_path.join("__out__");
-    std::fs::create_dir_all(&out_dir)?;
 
     let bundler_options = BundlerOptions {
         input: Some(vec![InputItem {
@@ -195,28 +220,28 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
         ..Default::default()
     };
 
-    // Run bundler
+    // Run bundler (rolldown's own async API — CPU-heavy but correctly on the runtime).
     let mut bundler = Bundler::new(bundler_options)?;
     let _output = bundler.write().await?;
 
-    // Read output file from disk
-    let mut code = String::new();
-    if let Ok(entries) = std::fs::read_dir(&out_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "mjs" || e == "js") {
-                code = std::fs::read_to_string(&path)?;
-                break;
+    // BLOCKING: read the output file off the async worker.
+    let out_dir_clone = out_dir.clone();
+    let code = tokio::task::spawn_blocking(move || -> Result<String> {
+        if let Ok(entries) = std::fs::read_dir(&out_dir_clone) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "mjs" || e == "js") {
+                    return Ok(std::fs::read_to_string(&path)?);
+                }
             }
         }
-    }
-
-    if code.is_empty() {
-        anyhow::bail!("Rolldown produced no output");
-    }
+        anyhow::bail!("Rolldown produced no output")
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("output read task panicked: {e}"))??;
 
     // Rewrite bare imports to CDN paths
-    code = rewrite_imports(&code, &dep_versions);
+    let code = rewrite_imports(&code, &dep_versions);
 
     // Clean up
     bundler.close().await?;
@@ -224,40 +249,34 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
     Ok(code)
 }
 
+/// Rewrite bare import specifiers to CDN paths. Chains both regex passes into a
+/// single owning String instead of copying the (potentially hundreds-of-KB) bundle
+/// three times — `replace_all` returns a `Cow`, which we own in place before the
+/// next pass borrows it.
 fn rewrite_imports(code: &str, deps: &HashMap<String, String>) -> String {
-    let mut result = code.to_string();
-
     // Rewrite static imports
-    result = IMPORT_RE
-        .replace_all(&result, |caps: &regex::Captures| {
-            let full = &caps[0];
-            let spec = &caps[1];
+    let owned = IMPORT_RE.replace_all(code, |caps: &regex::Captures| {
+        let full = &caps[0];
+        let spec = &caps[1];
+        if spec.starts_with('.') || spec.starts_with('/') {
+            return full.to_string();
+        }
+        let cdn_path = to_cdn_path(spec, deps);
+        full.replace(spec, &cdn_path)
+    });
 
-            if spec.starts_with('.') || spec.starts_with('/') {
-                return full.to_string();
-            }
+    // Rewrite dynamic imports — borrow the already-owned string from pass 1.
+    let owned = DYNAMIC_RE.replace_all(&owned, |caps: &regex::Captures| {
+        let full = &caps[0];
+        let spec = &caps[1];
+        if spec.starts_with('.') || spec.starts_with('/') {
+            return full.to_string();
+        }
+        let cdn_path = to_cdn_path(spec, deps);
+        full.replace(spec, &cdn_path)
+    });
 
-            let cdn_path = to_cdn_path(spec, deps);
-            full.replace(spec, &cdn_path)
-        })
-        .to_string();
-
-    // Rewrite dynamic imports
-    result = DYNAMIC_RE
-        .replace_all(&result, |caps: &regex::Captures| {
-            let full = &caps[0];
-            let spec = &caps[1];
-
-            if spec.starts_with('.') || spec.starts_with('/') {
-                return full.to_string();
-            }
-
-            let cdn_path = to_cdn_path(spec, deps);
-            full.replace(spec, &cdn_path)
-        })
-        .to_string();
-
-    result
+    owned.into_owned()
 }
 
 fn to_cdn_path(spec: &str, deps: &HashMap<String, String>) -> String {

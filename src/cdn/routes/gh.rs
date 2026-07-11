@@ -141,7 +141,13 @@ pub async fn handle_gh(
         .await
         {
             maybe_cache(&storage, &tarball_url, &cache_base, &cache_label, is_cached);
-            return Ok(file_response("README.md", &data, cache_control, &headers, None));
+            return Ok(file_response(
+                "README.md",
+                &data,
+                cache_control,
+                &headers,
+                None,
+            ));
         }
 
         let index_url = format!("{raw_base}/index.js");
@@ -161,7 +167,13 @@ pub async fn handle_gh(
                 // jsDelivr: the default file is always minified. README above is markdown
                 // (minify_for passes it through); index.js is real JS — minify it.
                 let data = minify_for("index.js", &data);
-                Ok(file_response("index.js", &data, cache_control, &headers, None))
+                Ok(file_response(
+                    "index.js",
+                    &data,
+                    cache_control,
+                    &headers,
+                    None,
+                ))
             }
             Err(_) => Err(AppError::not_found(
                 "No entry file found (README.md or index.js)",
@@ -190,7 +202,13 @@ pub async fn handle_gh(
                 .and_then(|m| m.files.as_ref())
                 .and_then(|files| files.iter().find(|f| f.name == filepath))
                 .and_then(|f| f.integrity.as_deref());
-            Ok(file_response(filepath, &file_data, cache_control, &headers, etag))
+            Ok(file_response(
+                filepath,
+                &file_data,
+                cache_control,
+                &headers,
+                etag,
+            ))
         }
         Err(_) => {
             // jsDelivr `.min` synthesis: foo.min.js requested but only foo.js exists.
@@ -213,7 +231,13 @@ pub async fn handle_gh(
                 tokio::spawn(async move {
                     s.set_raw(&k, &d).await;
                 });
-                return Ok(file_response(filepath, &minified, cache_control, &headers, None));
+                return Ok(file_response(
+                    filepath,
+                    &minified,
+                    cache_control,
+                    &headers,
+                    None,
+                ));
             }
 
             if !is_cached {

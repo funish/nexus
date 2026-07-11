@@ -34,7 +34,7 @@ pub type SharedStorage = Arc<dyn Storage>;
 
 pub async fn create_storage(config: &crate::config::Config) -> SharedStorage {
     if config.has_s3_config() {
-        Arc::new(s3::S3Storage::new(config).await)
+        Arc::new(s3::S3Storage::new(config))
     } else {
         Arc::new(fs::FsStorage::new(&config.cache_dir))
     }

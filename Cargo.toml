@@ -7,14 +7,14 @@ license = "MIT"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "io-util"] }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "gzip"] }
 semver = "1"
 node-semver = "2"
-serde_yml = "0.0.13"
+serde_yaml = "0.9"
 sha2 = "0.10"
 base64 = "0.22"
 mime_guess = "2"
@@ -30,9 +30,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 dashmap = "6"
 chrono = { version = "0.4", features = ["serde"] }
-aws-sdk-s3 = "1"
-aws-config = "1"
-aws-credential-types = "1"
+# rust-s3 (lib name `s3`) is a lightweight reqwest-backed S3 client — reuses the
+# existing reqwest/rustls/hyper-1.x stack instead of aws-sdk-s3's duplicate
+# hyper-0.14 + h2-0.3 + rustls-0.21 runtime. Path-style is RustFS's default.
+rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
 bytes = "1"
 rolldown = "1.1"
 # oxc shares the exact version rolldown pins (0.135) — same toolchain, no second copy.
@@ -43,6 +44,7 @@ url = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 strip = true
 codegen-units = 1
+panic = "abort"

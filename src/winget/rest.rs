@@ -65,6 +65,11 @@ pub struct ManifestSearchRequest {
     pub fetch_all_manifests: Option<bool>,
     #[serde(default)]
     pub query: Option<SearchRequestMatch>,
+    /// WinGet client field (same AND semantics as `Inclusions`). The client sends
+    /// `PackageMatchFilters` rather than `Inclusions` for most searches, so this is
+    /// the primary path; `Inclusions`/`Filters` remain for older callers.
+    #[serde(default)]
+    pub package_match_filters: Option<Vec<PackageMatchFilter>>,
     #[serde(default)]
     pub inclusions: Option<Vec<PackageMatchFilter>>,
     #[serde(default)]

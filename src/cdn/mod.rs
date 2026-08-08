@@ -1,17 +1,14 @@
-pub mod routes;
-pub mod utils;
+//! CDN domain logic. Route handlers live in [`crate::routes::cdn`]; route-agnostic
+//! shared infrastructure (http/cache/singleflight/concurrency) in [`crate::utils`].
 
-/// CDN routes: `/cdn/{npm,jsr,gh,cdnjs,wp}/**` — behavior aligned with jsDelivr.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::get;
-    axum::Router::new()
-        .route("/cdn/npm/{*path}", get(routes::npm::handle_npm))
-        .route("/cdn/jsr/{*path}", get(routes::jsr::handle_jsr))
-        .route("/cdn/gh/{*path}", get(routes::gh::handle_gh))
-        .route("/cdn/cdnjs/{*path}", get(routes::cdnjs::handle_cdnjs))
-        .route("/cdn/wp/{*path}", get(routes::wp::handle_wp))
-        .route(
-            "/cdn/combine/{*paths}",
-            get(routes::combine::handle_combine),
-        )
-}
+pub mod constants;
+pub mod entry;
+pub mod esm;
+pub mod integrity;
+pub mod listing;
+pub mod mime;
+pub mod minify;
+pub mod registry;
+pub mod resolve;
+pub mod response;
+pub mod tarball;

@@ -37,7 +37,7 @@ pub async fn bundle_esm_package(
     let storage_for_fn = storage.clone();
     let opts = options.clone();
     let key = esm_key.clone();
-    super::singleflight::run_once(&esm_key, || {
+    crate::utils::singleflight::run_once(&esm_key, || {
         let storage = storage_for_fn.clone();
         let opts = opts.clone();
         let key = key.clone();
@@ -77,7 +77,7 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
     // Cap concurrent bundles: rolldown is CPU/memory-heavy and each bundle
     // unpacks the package to a temp dir. Without this a cold-start burst of
     // distinct packages can OOM the process.
-    let _bundle_permit = super::concurrency::BUNDLE_SEMAPHORE
+    let _bundle_permit = crate::utils::concurrency::BUNDLE_SEMAPHORE
         .acquire()
         .await
         .unwrap();
@@ -160,7 +160,7 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
         .strip_prefix("./")
         .unwrap_or(&options.entry_point)
         .to_string();
-    let entry_fallbacks: Vec<String> = crate::cdn::utils::entry::ENTRY_FALLBACKS
+    let entry_fallbacks: Vec<String> = crate::cdn::entry::ENTRY_FALLBACKS
         .iter()
         .map(|s| (*s).to_string())
         .collect();
@@ -318,7 +318,7 @@ async fn latest_version_satisfying(
     package_name: &str,
     req: &node_semver::Range,
 ) -> Option<String> {
-    let metadata = crate::cdn::utils::registry::fetch_npm_metadata(storage, package_name)
+    let metadata = crate::cdn::registry::fetch_npm_metadata(storage, package_name)
         .await
         .ok()?;
     let versions = metadata.get("versions")?.as_object()?;

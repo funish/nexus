@@ -14,8 +14,8 @@ use axum::response::Response;
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::cdn::utils::constants::{CDN_CACHE_BRANCH, CDN_CACHE_LONG};
-use crate::cdn::utils::tarball::try_fetch;
+use crate::cdn::constants::{CDN_CACHE_BRANCH, CDN_CACHE_LONG};
+use crate::cdn::tarball::try_fetch;
 use crate::error::AppError;
 use crate::storage::SharedStorage;
 
@@ -25,7 +25,7 @@ static PLUGIN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^plugins/([^/]+)/(tags|trunk)(?:/([^/]+))?(?:/(.*))?$").unwrap());
 
 pub async fn handle_wp(
-    State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
+    State((storage, _)): State<(SharedStorage, crate::winget::db::SharedDb)>,
     headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Result<Response, AppError> {
@@ -111,5 +111,5 @@ fn file_response(svn_url: &str, data: &[u8], is_trunk: bool, headers: &HeaderMap
     } else {
         CDN_CACHE_LONG
     };
-    crate::cdn::utils::response::file_response(filename, data, cache_control, headers, None)
+    crate::cdn::response::file_response(filename, data, cache_control, headers, None)
 }

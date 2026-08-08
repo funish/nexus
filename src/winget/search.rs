@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use strsim::normalized_levenshtein;
 
-use super::response::{
+use super::rest::{
     ManifestSearchResult, ManifestVersion, MatchType, PackageMatchField, PackageMatchFilter,
 };
 use super::token::decode_continuation_token;
@@ -354,7 +354,7 @@ fn entry_to_result(e: &WinGetSearchEntry) -> ManifestSearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::winget::utils::token::encode_continuation_token;
+    use crate::winget::token::encode_continuation_token;
 
     fn sample_index() -> Vec<WinGetSearchEntry> {
         vec![

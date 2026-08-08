@@ -14,13 +14,13 @@ use node_semver::Version;
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::cdn::utils::constants::*;
-use crate::cdn::utils::listing::{CdnFile, CdnPackageListing};
-use crate::cdn::utils::minify::minified_entry;
-use crate::cdn::utils::registry::{fetch_cdnjs_files, fetch_cdnjs_library};
-use crate::cdn::utils::resolve::max_satisfying;
-use crate::cdn::utils::response::file_response;
-use crate::cdn::utils::tarball::download_tarball;
+use crate::cdn::constants::*;
+use crate::cdn::listing::{CdnFile, CdnPackageListing};
+use crate::cdn::minify::minified_entry;
+use crate::cdn::registry::{fetch_cdnjs_files, fetch_cdnjs_library};
+use crate::cdn::resolve::max_satisfying;
+use crate::cdn::response::file_response;
+use crate::cdn::tarball::download_tarball;
 use crate::error::AppError;
 use crate::storage::{CacheMeta, CdnFileMeta, SharedStorage};
 
@@ -30,19 +30,23 @@ static CDNJS_AT_RE: LazyLock<Regex> =
 static VERSION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^v?\d+\.\d+(\.\d+)?(-[^/]+)?$").unwrap());
 
-pub async fn handle_cdnjs(
-    State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path(path): Path<String>,
-) -> Result<Response, AppError> {
-    if path.is_empty() {
-        return Err(AppError::bad_request("Invalid path"));
-    }
-    let has_trailing_slash = uri.to_string().ends_with('/');
+/// Shared, read-only context borrowed by the `serve_*` branches.
+struct CdnjsCtx<'a> {
+    storage: &'a SharedStorage,
+    headers: &'a HeaderMap,
+    library: &'a str,
+    version: &'a str,
+    filepath: &'a str,
+    cache_base: &'a str,
+    cache_control: &'static str,
+}
 
-    // Parse path: library@version/file or library/version/file.
-    let (library, mut version, mut filepath) = if let Some(caps) = CDNJS_AT_RE.captures(&path) {
+/// Parse `library@version/file` or `library/version/file` (or a bare `library`).
+/// "latest" normalizes to an empty version so it resolves to the newest tag. A
+/// trailing slash on the file portion is stripped — the root listing is detected
+/// separately via the request URI.
+fn parse_cdnjs_path(path: &str) -> (String, String, String) {
+    let (library, version, mut filepath) = if let Some(caps) = CDNJS_AT_RE.captures(path) {
         let mut v = caps[2].to_string();
         if v == "latest" {
             v.clear();
@@ -69,16 +73,24 @@ pub async fn handle_cdnjs(
         }
     };
 
-    // Normalize away any trailing slash on the file portion (root listing is detected
-    // separately via has_trailing_slash).
     while filepath.ends_with('/') {
         filepath.pop();
     }
 
-    // Version resolution: when unspecified or not a valid semver, consult the cdnjs API
-    // (exact -> range -> latest) and fill the default filename for an empty filepath.
+    (library, version, filepath)
+}
+
+/// Resolve the version via the cdnjs API (exact -> range -> latest) when unspecified
+/// or not a valid semver, and fill the default filename for a bare library root.
+/// Returns `(resolved_version, filepath)` with the default filename applied.
+async fn resolve_cdnjs_version(
+    storage: &SharedStorage,
+    library: &str,
+    mut version: String,
+    mut filepath: String,
+) -> Result<(String, String), AppError> {
     if version.is_empty() || Version::parse(&version).is_err() {
-        let data = fetch_cdnjs_library(&storage, &library)
+        let data = fetch_cdnjs_library(storage, library)
             .await
             .map_err(|_| AppError::not_found("Library not found"))?;
 
@@ -119,6 +131,23 @@ pub async fn handle_cdnjs(
         }
     }
 
+    Ok((version, filepath))
+}
+
+pub async fn handle_cdnjs(
+    State((storage, _)): State<(SharedStorage, crate::winget::db::SharedDb)>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Result<Response, AppError> {
+    if path.is_empty() {
+        return Err(AppError::bad_request("Invalid path"));
+    }
+    let has_trailing_slash = uri.to_string().ends_with('/');
+
+    let (library, version, filepath) = parse_cdnjs_path(&path);
+    let (version, filepath) = resolve_cdnjs_version(&storage, &library, version, filepath).await?;
+
     let cacheable = Version::parse(&version).is_ok();
     let cache_control = if cacheable {
         CDN_CACHE_LONG
@@ -127,60 +156,91 @@ pub async fn handle_cdnjs(
     };
     let cache_base = format!("cdn/cdnjs/{library}/{version}");
 
-    // Library root, no trailing slash: serve the default file from the API.
-    if filepath.is_empty() && !has_trailing_slash {
-        let filename = fetch_cdnjs_library(&storage, &library)
-            .await
-            .map_err(|_| AppError::not_found("Library not found"))?["filename"]
-            .as_str()
-            .ok_or_else(|| AppError::not_found("No default filename"))?
-            .to_string();
-        let original = get_cdnjs_file(&storage, &library, &version, &filename, &cache_base).await?;
-        // jsDelivr: the default file is always minified (see npm route).
-        let file_data = minified_entry(&storage, &cache_base, &filename, &original).await;
-        return Ok(file_response(
-            &filename,
-            &file_data,
-            cache_control,
-            &headers,
-            None,
-        ));
-    }
+    let ctx = CdnjsCtx {
+        storage: &storage,
+        headers: &headers,
+        library: &library,
+        version: &version,
+        filepath: &filepath,
+        cache_base: &cache_base,
+        cache_control,
+    };
 
-    // Library root with trailing slash: list all files for the version.
-    if filepath.is_empty() && has_trailing_slash {
-        let files = ensure_cdnjs_file_list_cached(&storage, &library, &version, &cache_base)
-            .await
-            .map_err(|_| AppError::not_found("Version not found"))?;
-        let listing = CdnPackageListing {
-            name: Some(library),
-            version: Some(version),
-            path: String::new(),
-            files: files
-                .into_iter()
-                .map(|name| CdnFile {
-                    name,
-                    size: 0,
-                    integrity: None,
-                })
-                .collect(),
-        };
-        let body = serde_json::to_string(&listing)?;
-        return Ok(json_listing(body));
+    if filepath.is_empty() {
+        if has_trailing_slash {
+            serve_cdnjs_root_listing(&ctx).await
+        } else {
+            serve_cdnjs_root_file(&ctx).await
+        }
+    } else {
+        serve_cdnjs_subpath(&ctx).await
     }
+}
 
-    // Sub-path file with a directory-listing fallback on 404.
-    match get_cdnjs_file(&storage, &library, &version, &filepath, &cache_base).await {
+/// Library root without a trailing slash: serve the default file from the API.
+async fn serve_cdnjs_root_file(ctx: &CdnjsCtx<'_>) -> Result<Response, AppError> {
+    let filename = fetch_cdnjs_library(ctx.storage, ctx.library)
+        .await
+        .map_err(|_| AppError::not_found("Library not found"))?["filename"]
+        .as_str()
+        .ok_or_else(|| AppError::not_found("No default filename"))?
+        .to_string();
+    let original =
+        get_cdnjs_file(ctx.storage, ctx.library, ctx.version, &filename, ctx.cache_base).await?;
+    // jsDelivr: the default file is always minified (see npm route).
+    let file_data = minified_entry(ctx.storage, ctx.cache_base, &filename, &original).await;
+    Ok(file_response(
+        &filename,
+        &file_data,
+        ctx.cache_control,
+        ctx.headers,
+        None,
+    ))
+}
+
+/// Library root with a trailing slash: list all files for the resolved version.
+async fn serve_cdnjs_root_listing(ctx: &CdnjsCtx<'_>) -> Result<Response, AppError> {
+    let files = ensure_cdnjs_file_list_cached(ctx.storage, ctx.library, ctx.version, ctx.cache_base)
+        .await
+        .map_err(|_| AppError::not_found("Version not found"))?;
+    let listing = CdnPackageListing {
+        name: Some(ctx.library.to_string()),
+        version: Some(ctx.version.to_string()),
+        path: String::new(),
+        files: files
+            .into_iter()
+            .map(|name| CdnFile {
+                name,
+                size: 0,
+                integrity: None,
+            })
+            .collect(),
+    };
+    let body = serde_json::to_string(&listing)?;
+    Ok(json_listing(body))
+}
+
+/// Sub-path file with a directory-listing fallback on 404.
+async fn serve_cdnjs_subpath(ctx: &CdnjsCtx<'_>) -> Result<Response, AppError> {
+    match get_cdnjs_file(
+        ctx.storage,
+        ctx.library,
+        ctx.version,
+        ctx.filepath,
+        ctx.cache_base,
+    )
+    .await
+    {
         Ok(file_data) => Ok(file_response(
-            &filepath,
+            ctx.filepath,
             &file_data,
-            cache_control,
-            &headers,
+            ctx.cache_control,
+            ctx.headers,
             None,
         )),
         Err(_) => {
-            let files = get_cached_file_list(&storage, &cache_base).await;
-            let prefix = format!("{filepath}/");
+            let files = get_cached_file_list(ctx.storage, ctx.cache_base).await;
+            let prefix = format!("{}/", ctx.filepath);
             let mut dir: Vec<CdnFile> = files
                 .into_iter()
                 .filter(|f| f.starts_with(&prefix))
@@ -192,13 +252,16 @@ pub async fn handle_cdnjs(
                 .filter(|f| !f.name.is_empty())
                 .collect();
             if dir.is_empty() {
-                return Err(AppError::not_found(format!("Path not found: {filepath}")));
+                return Err(AppError::not_found(format!(
+                    "Path not found: {}",
+                    ctx.filepath
+                )));
             }
             dir.sort_by(|a, b| a.name.cmp(&b.name));
             let listing = CdnPackageListing {
-                name: Some(library),
-                version: Some(version),
-                path: filepath,
+                name: Some(ctx.library.to_string()),
+                version: Some(ctx.version.to_string()),
+                path: ctx.filepath.to_string(),
                 files: dir,
             };
             let body = serde_json::to_string(&listing)?;

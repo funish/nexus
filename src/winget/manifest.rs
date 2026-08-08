@@ -14,7 +14,7 @@ use std::sync::LazyLock;
 use crate::storage::SharedStorage;
 
 use super::constants::*;
-use super::response::VersionManifest;
+use super::rest::VersionManifest;
 use super::tree::{get_github_tree_paths, get_letter_directory_shas};
 
 static LOCALE_FILE_RE: LazyLock<Regex> =
@@ -70,7 +70,7 @@ pub async fn fetch_manifest_content(
     }
 
     let url = format!("{WINGET_GITHUB_RAW_BASE}/{manifest_path}");
-    let resp = crate::http::HTTP_CLIENT
+    let resp = crate::utils::http::HTTP_CLIENT
         .get(&url)
         .timeout(Duration::from_secs(30))
         .send()

@@ -7,15 +7,15 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::storage::SharedStorage;
-use crate::winget::utils::db::{SharedDb, get_index_db, get_search_index};
-use crate::winget::utils::queries::package_exists;
-use crate::winget::utils::response::{
+use crate::winget::db::{SharedDb, get_index_db, get_search_index};
+use crate::winget::queries::package_exists;
+use crate::winget::rest::{
     AuthenticationInfo, InformationData, InformationResponse, ManifestSearchRequest,
     ManifestSearchResponse, MatchType, PackageIdentifierItem, PackageMatchFilter,
     PackageSingleResponse, PackagesResponse, json_ok, winget_error,
 };
-use crate::winget::utils::search::{SearchResult, search_packages};
-use crate::winget::utils::token::{decode_continuation_token, encode_continuation_token};
+use crate::winget::search::{SearchResult, search_packages};
+use crate::winget::token::{decode_continuation_token, encode_continuation_token};
 
 const WINGET_PACKAGES_PAGE_SIZE: usize = 100;
 
@@ -65,6 +65,9 @@ pub async fn handle_manifest_search_post(
         .and_then(|q| q.match_type)
         .unwrap_or_default();
     let token = header_continuation_token(&headers);
+    // The WinGet client sends `PackageMatchFilters` for most searches (rather than the
+    // legacy `Inclusions`); treat them as the inclusion set (AND match semantics).
+    let inclusions = req.package_match_filters.or(req.inclusions);
     run_and_build(
         &db,
         &storage,
@@ -72,7 +75,7 @@ pub async fn handle_manifest_search_post(
         match_type,
         req.maximum_results,
         token,
-        req.inclusions,
+        inclusions,
         req.filters,
     )
     .await

@@ -9,13 +9,13 @@ use axum::response::{IntoResponse, Response};
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::cdn::utils::constants::*;
-use crate::cdn::utils::listing::{CdnPackageListing, get_directory_listing};
-use crate::cdn::utils::minify::minified_entry;
-use crate::cdn::utils::registry::fetch_jsr_metadata;
-use crate::cdn::utils::resolve::resolve_registry_version;
-use crate::cdn::utils::response::file_response_versioned;
-use crate::cdn::utils::tarball::{
+use crate::cdn::constants::*;
+use crate::cdn::listing::{CdnPackageListing, get_directory_listing};
+use crate::cdn::minify::minified_entry;
+use crate::cdn::registry::fetch_jsr_metadata;
+use crate::cdn::resolve::resolve_registry_version;
+use crate::cdn::response::file_response_versioned;
+use crate::cdn::tarball::{
     cache_package_from_tarball, extract_file_from_tarball, is_package_cached,
 };
 use crate::error::AppError;
@@ -25,7 +25,7 @@ static JSR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^@([^/]+)/([^@/]+)(?:@([^/]+))?(?:/(.*))?$").unwrap());
 
 pub async fn handle_jsr(
-    State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
+    State((storage, _)): State<(SharedStorage, crate::winget::db::SharedDb)>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(path): Path<String>,

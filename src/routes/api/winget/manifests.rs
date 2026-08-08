@@ -13,19 +13,19 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::storage::SharedStorage;
-use crate::winget::utils::constants::*;
-use crate::winget::utils::db::{SharedDb, get_index_db};
-use crate::winget::utils::manifest::{
+use crate::winget::constants::*;
+use crate::winget::db::{SharedDb, get_index_db};
+use crate::winget::manifest::{
     ManifestType, build_version_manifest, construct_manifest_path, fetch_manifest_content,
     get_version_manifests, merge_installer, parse_yaml,
 };
-use crate::winget::utils::queries::get_package_versions;
-use crate::winget::utils::response::{
+use crate::winget::queries::get_package_versions;
+use crate::winget::rest::{
     InstallerMultipleResponse, InstallerSingleResponse, LocaleMultipleResponse,
     LocaleSingleResponse, PackageManifestData, PackageManifestResponse, VersionManifest,
     VersionMultipleResponse, VersionSchema, json_ok, winget_error,
 };
-use crate::winget::utils::token::{decode_continuation_token, encode_continuation_token};
+use crate::winget::token::{decode_continuation_token, encode_continuation_token};
 
 static LOCALE_FILE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\.locale\.([^.]+)\.yaml$").unwrap());

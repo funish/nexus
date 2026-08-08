@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-use super::response::ManifestVersion;
+use super::rest::ManifestVersion;
 use super::search::WinGetSearchEntry;
 
 const DELIM: &str = "\x1E";
@@ -241,7 +241,7 @@ mod tests {
             return;
         }
         let t_open = std::time::Instant::now();
-        let conn = crate::winget::utils::db::open_db(path).expect("open_db");
+        let conn = crate::winget::db::open_db(path).expect("open_db");
         eprintln!("[timing] open_db: {:.3}s", t_open.elapsed().as_secs_f64());
         let t0 = std::time::Instant::now();
         let index = build_search_index(&conn).expect("build_search_index");

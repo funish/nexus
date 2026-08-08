@@ -90,12 +90,12 @@ pub fn extract_file_from_tgz(data: &[u8], filepath: &str) -> Option<Vec<u8>> {
 pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
     // Cap concurrent outbound fetches so a burst of cache misses doesn't trip
     // npm's per-IP rate limit (429 / IP block).
-    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+    let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
         .acquire()
         .await
         .unwrap();
 
-    let mut resp = crate::http::HTTP_CLIENT
+    let mut resp = crate::utils::http::HTTP_CLIENT
         .get(url)
         .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
         .send()
@@ -154,7 +154,7 @@ pub async fn extract_file_from_tarball(
     // leader downloads; followers wait, then re-read storage.
     let storage_for_fn = storage.clone();
     let warm = warm.map(|(base, label)| (base.to_string(), label.to_string()));
-    super::singleflight::run_once(cache_key, || {
+    crate::utils::singleflight::run_once(cache_key, || {
         let storage = storage_for_fn.clone();
         let tarball_url = tarball_url.to_string();
         let filepath = filepath.to_string();
@@ -386,11 +386,11 @@ pub async fn cache_package_from_bytes(
 }
 
 pub async fn try_fetch(url: &str) -> Option<Vec<u8>> {
-    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+    let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
         .acquire()
         .await
         .ok()?;
-    let mut resp = crate::http::HTTP_CLIENT
+    let mut resp = crate::utils::http::HTTP_CLIENT
         .get(url)
         .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
         .send()

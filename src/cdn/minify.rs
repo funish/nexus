@@ -126,6 +126,78 @@ pub fn strip_min_suffix(path: &str) -> Option<String> {
     })
 }
 
+/// jsDelivr `.min` synthesis: `foo.min.js` requested when only `foo.js` exists.
+///
+/// Fetches the un-minified source from the tarball (downloading + warming it on the
+/// way, so cold packages are covered), minifies it, caches the result, and returns
+/// the response. Returns `Ok(None)` when `filepath` is not a `.min.{js,css}` path or
+/// its source is absent — the caller then falls through to its own fallback (npm
+/// retries older matching versions; gh 404s or lists the directory).
+///
+/// `raw_url_base` picks the per-origin direct URL for the source file: gh passes the
+/// raw GitHub base (linking to raw.githubusercontent.com), npm passes `None` (proxied
+/// through us). `resolved_version`, when `Some`, emits `x-resolved-version` via
+/// `file_response_versioned` (npm); `None` uses the plain `file_response` (gh).
+// Eight params are the irreducible interface — source/target location, response
+// headers/cache-control, and the two per-origin knobs — and each is consumed once;
+// a ctx struct would only rename them for two call sites.
+#[allow(clippy::too_many_arguments)]
+pub async fn try_min_synthesis(
+    storage: &crate::storage::SharedStorage,
+    tarball_url: &str,
+    cache_base: &str,
+    filepath: &str,
+    headers: &axum::http::HeaderMap,
+    cache_control: &'static str,
+    raw_url_base: Option<&str>,
+    resolved_version: Option<&str>,
+) -> Result<Option<axum::response::Response>, crate::error::AppError> {
+    // Only `.min.{js,css}` paths are synthesizable; otherwise the caller proceeds.
+    let Some(orig) = strip_min_suffix(filepath) else {
+        return Ok(None);
+    };
+    // gh serves a raw GitHub URL for the un-minified file; npm proxies through us.
+    let direct_url = raw_url_base.map(|base| format!("{base}/{orig}"));
+    let orig_data = match crate::cdn::tarball::extract_file_from_tarball(
+        storage,
+        tarball_url,
+        &orig,
+        &format!("{cache_base}/{orig}"),
+        direct_url.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(data) => data,
+        Err(_) => return Ok(None),
+    };
+    let minified = minify_for(&orig, &orig_data);
+    // Cache the synthesized .min file so later requests hit storage directly.
+    let s = storage.clone();
+    let (k, d) = (format!("{cache_base}/{filepath}"), minified.clone());
+    tokio::spawn(async move {
+        s.set_raw(&k, &d).await;
+    });
+    let resp = match resolved_version {
+        Some(v) => crate::cdn::response::file_response_versioned(
+            filepath,
+            &minified,
+            cache_control,
+            headers,
+            v,
+            None,
+        ),
+        None => crate::cdn::response::file_response(
+            filepath,
+            &minified,
+            cache_control,
+            headers,
+            None,
+        ),
+    };
+    Ok(Some(resp))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +242,30 @@ mod tests {
         );
         assert_eq!(strip_min_suffix("foo.js"), None);
         assert_eq!(strip_min_suffix("foo.min.json"), None);
+    }
+
+    #[tokio::test]
+    async fn try_min_synthesis_skips_non_min_paths_without_fetching() {
+        // A non-`.min` path short-circuits to Ok(None) before any storage or network
+        // access, so an unreachable tarball URL proves no fetch happened.
+        let tmp = tempfile::tempdir().unwrap();
+        let storage: crate::storage::SharedStorage =
+            std::sync::Arc::new(crate::storage::fs::FsStorage::new(
+                tmp.path().to_str().unwrap(),
+            ));
+        let headers = axum::http::HeaderMap::new();
+        let resp = try_min_synthesis(
+            &storage,
+            "https://example.invalid/x.tgz",
+            "cdn/npm/x@1.0.0",
+            "foo.js",
+            &headers,
+            "public, max-age=60",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(resp.is_none(), "non-.min path must return Ok(None)");
     }
 }

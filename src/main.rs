@@ -1,8 +1,9 @@
 mod cdn;
 mod config;
 mod error;
-mod http;
+mod routes;
 mod storage;
+mod utils;
 mod winget;
 
 use axum::Router;
@@ -14,7 +15,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing_subscriber::EnvFilter;
 
 /// Shared application state passed to all handlers.
-pub type AppState = (storage::SharedStorage, winget::utils::db::SharedDb);
+pub type AppState = (storage::SharedStorage, winget::db::SharedDb);
 
 #[tokio::main]
 async fn main() {
@@ -24,7 +25,7 @@ async fn main() {
 
     let config = config::Config::from_env();
     let storage = storage::create_storage(&config).await;
-    let winget_db = winget::utils::db::create_shared_db();
+    let winget_db = winget::db::create_shared_db();
 
     // Permissive CORS for a public CDN: any origin, method, and request header.
     // Safelisted response headers (cache-control, content-length, content-type, ...)
@@ -48,8 +49,8 @@ async fn main() {
     let state: AppState = (storage, winget_db);
 
     let app = Router::new()
-        .merge(cdn::router())
-        .merge(winget::router())
+        .merge(routes::cdn::router())
+        .merge(routes::api::winget::router())
         .route(
             "/",
             get(|| async { axum::response::Html(include_str!("../index.html")) }),

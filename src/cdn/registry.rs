@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use super::cache::{META_CACHE_TTL_SECS, cached_json};
+use crate::utils::cache::{META_CACHE_TTL_SECS, cached_json};
 use super::constants::{CDN_FETCH_TIMEOUT_SECS, CDN_JSR_REGISTRY, CDN_NPM_REGISTRY};
 use crate::storage::SharedStorage;
 
@@ -12,7 +12,7 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         META_CACHE_TTL_SECS,
         async {
             let url = format!("{CDN_NPM_REGISTRY}/{package_name}");
-            let resp = crate::http::HTTP_CLIENT
+            let resp = crate::utils::http::HTTP_CLIENT
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
                 .send()
@@ -38,7 +38,7 @@ pub async fn fetch_jsr_metadata(
         async {
             let npm_name = format!("@jsr/{}__{}", scope, package);
             let url = format!("{CDN_JSR_REGISTRY}/{npm_name}");
-            let resp = crate::http::HTTP_CLIENT
+            let resp = crate::utils::http::HTTP_CLIENT
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
                 .send()
@@ -67,7 +67,7 @@ pub async fn fetch_github_tags(
             // packages API normalizes away the "v" prefix and would 404 against GitHub
             // when building tarball/raw URLs.
             let url = format!("https://api.github.com/repos/{owner}/{repo}/tags?per_page=100");
-            let mut req = crate::http::HTTP_CLIENT
+            let mut req = crate::utils::http::HTTP_CLIENT
                 .get(&url)
                 .header("Accept", "application/vnd.github+json")
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS));
@@ -102,7 +102,7 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
             let url = format!(
                 "https://api.cdnjs.com/libraries/{library}?fields=version,versions,filename"
             );
-            let resp = crate::http::HTTP_CLIENT
+            let resp = crate::utils::http::HTTP_CLIENT
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
                 .send()
@@ -117,12 +117,12 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
 }
 
 pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
-    let _permit = super::concurrency::DOWNLOAD_SEMAPHORE
+    let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
         .acquire()
         .await
         .unwrap();
     let url = format!("https://api.cdnjs.com/libraries/{library}/{version}");
-    let resp = crate::http::HTTP_CLIENT
+    let resp = crate::utils::http::HTTP_CLIENT
         .get(&url)
         .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
         .send()
@@ -140,7 +140,7 @@ pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<
         META_CACHE_TTL_SECS,
         async {
             let url = format!("{CDN_NPM_REGISTRY}/-/org/{scope}/package");
-            let resp = crate::http::HTTP_CLIENT
+            let resp = crate::utils::http::HTTP_CLIENT
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
                 .send()

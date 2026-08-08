@@ -13,11 +13,11 @@ use node_semver::Version;
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::cdn::utils::constants::*;
-use crate::cdn::utils::mime::get_content_type;
-use crate::cdn::utils::registry::{fetch_github_tags, fetch_npm_metadata};
-use crate::cdn::utils::resolve::{resolve_from_tags, resolve_registry_version};
-use crate::cdn::utils::tarball::extract_file_from_tarball;
+use crate::cdn::constants::*;
+use crate::cdn::mime::get_content_type;
+use crate::cdn::registry::{fetch_github_tags, fetch_npm_metadata};
+use crate::cdn::resolve::{resolve_from_tags, resolve_registry_version};
+use crate::cdn::tarball::extract_file_from_tarball;
 use crate::error::AppError;
 use crate::storage::SharedStorage;
 
@@ -28,7 +28,7 @@ static GH_PART_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^gh/([^/]+)/([^@/]+)(?:@([^/]+))?(?:/(.*))?$").unwrap());
 
 pub async fn handle_combine(
-    State((storage, _)): State<(SharedStorage, crate::winget::utils::db::SharedDb)>,
+    State((storage, _)): State<(SharedStorage, crate::winget::db::SharedDb)>,
     Path(paths): Path<String>,
 ) -> Result<Response, AppError> {
     let parts: Vec<&str> = paths

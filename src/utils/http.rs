@@ -43,25 +43,31 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 
 /// Cached `GITHUB_TOKEN` (if set). Authenticated requests get a higher rate
 /// limit on both api.github.com (5000/h vs 60/h anonymous) and
-/// raw.githubusercontent.com, so winget manifest/tree fetches pass this through.
+/// raw.githubusercontent.com, so every GitHub fetch — winget manifest/tree and
+/// CDN tag lookups — passes this through.
 pub static GITHUB_TOKEN: LazyLock<Option<String>> =
     LazyLock::new(|| std::env::var("GITHUB_TOKEN").ok().filter(|s| !s.is_empty()));
 
 /// GET `url` with bounded retry on 429/5xx. Honors `Retry-After` when present,
 /// otherwise exponential backoff (200ms, 400ms). `auth_token`, when given, is
-/// sent as `Authorization: Bearer <token>`. Returns the final response —
-/// success or the last retryable failure — so the caller owns body/status
-/// handling. Every upstream GET goes through here so CDN and winget share one
-/// resilient path instead of each call site retrying ad hoc.
+/// sent as `Authorization: Bearer <token>`; `headers` are added to every attempt
+/// (e.g. GitHub's `Accept`). Returns the final response — success or the last
+/// retryable failure — so the caller owns body/status handling. Every upstream
+/// GET goes through here so CDN and winget share one resilient path instead of
+/// each call site retrying ad hoc.
 pub async fn get_with_retry(
     url: &str,
     timeout: Duration,
     auth_token: Option<&str>,
+    headers: &[(&str, &str)],
 ) -> Result<reqwest::Response> {
     let bearer = auth_token.map(|t| format!("Bearer {t}"));
     let mut attempt = 0u32;
     loop {
         let mut req = HTTP_CLIENT.get(url).timeout(timeout);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
         if let Some(ref auth) = bearer {
             req = req.header("Authorization", auth);
         }

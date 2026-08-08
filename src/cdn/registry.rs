@@ -1,9 +1,15 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use serde_json::Value;
 
 use crate::utils::cache::{META_CACHE_TTL_SECS, cached_json};
+use crate::utils::http::{GITHUB_TOKEN, get_with_retry};
 use super::constants::{CDN_FETCH_TIMEOUT_SECS, CDN_JSR_REGISTRY, CDN_NPM_REGISTRY};
 use crate::storage::SharedStorage;
+
+/// Per-request timeout for registry metadata fetches.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(CDN_FETCH_TIMEOUT_SECS);
 
 pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> Result<Value> {
     cached_json(
@@ -12,11 +18,7 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         META_CACHE_TTL_SECS,
         async {
             let url = format!("{CDN_NPM_REGISTRY}/{package_name}");
-            let resp = crate::utils::http::HTTP_CLIENT
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .send()
-                .await?;
+            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Package not found: {package_name}");
             }
@@ -38,11 +40,7 @@ pub async fn fetch_jsr_metadata(
         async {
             let npm_name = format!("@jsr/{}__{}", scope, package);
             let url = format!("{CDN_JSR_REGISTRY}/{npm_name}");
-            let resp = crate::utils::http::HTTP_CLIENT
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .send()
-                .await?;
+            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("JSR package not found: @{scope}/{package}");
             }
@@ -67,14 +65,13 @@ pub async fn fetch_github_tags(
             // packages API normalizes away the "v" prefix and would 404 against GitHub
             // when building tarball/raw URLs.
             let url = format!("https://api.github.com/repos/{owner}/{repo}/tags?per_page=100");
-            let mut req = crate::utils::http::HTTP_CLIENT
-                .get(&url)
-                .header("Accept", "application/vnd.github+json")
-                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS));
-            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-                req = req.header("Authorization", format!("Bearer {token}"));
-            }
-            let resp = req.send().await?;
+            let resp = get_with_retry(
+                &url,
+                FETCH_TIMEOUT,
+                GITHUB_TOKEN.as_deref(),
+                &[("Accept", "application/vnd.github+json")],
+            )
+            .await?;
             if !resp.status().is_success() {
                 anyhow::bail!("GitHub repo not found: {owner}/{repo}");
             }
@@ -102,11 +99,7 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
             let url = format!(
                 "https://api.cdnjs.com/libraries/{library}?fields=version,versions,filename"
             );
-            let resp = crate::utils::http::HTTP_CLIENT
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .send()
-                .await?;
+            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("cdnjs library not found: {library}");
             }
@@ -122,11 +115,7 @@ pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
         .await
         .unwrap();
     let url = format!("https://api.cdnjs.com/libraries/{library}/{version}");
-    let resp = crate::utils::http::HTTP_CLIENT
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-        .send()
-        .await?;
+    let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
     if !resp.status().is_success() {
         anyhow::bail!("cdnjs version not found: {library}@{version}");
     }
@@ -140,11 +129,7 @@ pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<
         META_CACHE_TTL_SECS,
         async {
             let url = format!("{CDN_NPM_REGISTRY}/-/org/{scope}/package");
-            let resp = crate::utils::http::HTTP_CLIENT
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-                .send()
-                .await?;
+            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Organization not found: @{scope}");
             }

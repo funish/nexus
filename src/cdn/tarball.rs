@@ -95,18 +95,23 @@ pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
         .await
         .unwrap();
 
-    let mut resp = crate::utils::http::HTTP_CLIENT
-        .get(url)
-        .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                anyhow::anyhow!("Tarball download timed out")
-            } else {
-                anyhow::anyhow!("Failed to download tarball: {e}")
-            }
-        })?;
+    let mut resp = crate::utils::http::get_with_retry(
+        url,
+        Duration::from_secs(CDN_FETCH_TIMEOUT_SECS),
+        None,
+        &[],
+    )
+    .await
+    .map_err(|e| {
+        let timed_out = e
+            .downcast_ref::<::reqwest::Error>()
+            .is_some_and(|re| re.is_timeout());
+        if timed_out {
+            anyhow::anyhow!("Tarball download timed out")
+        } else {
+            anyhow::anyhow!("Failed to download tarball: {e}")
+        }
+    })?;
 
     if !resp.status().is_success() {
         anyhow::bail!("Failed to download tarball: {}", resp.status());
@@ -390,12 +395,14 @@ pub async fn try_fetch(url: &str) -> Option<Vec<u8>> {
         .acquire()
         .await
         .ok()?;
-    let mut resp = crate::utils::http::HTTP_CLIENT
-        .get(url)
-        .timeout(Duration::from_secs(CDN_FETCH_TIMEOUT_SECS))
-        .send()
-        .await
-        .ok()?;
+    let mut resp = crate::utils::http::get_with_retry(
+        url,
+        Duration::from_secs(CDN_FETCH_TIMEOUT_SECS),
+        None,
+        &[],
+    )
+    .await
+    .ok()?;
     if !resp.status().is_success() {
         return None;
     }

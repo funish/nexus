@@ -82,6 +82,7 @@ pub async fn fetch_manifest_content(
         &url,
         Duration::from_secs(30),
         crate::utils::http::GITHUB_TOKEN.as_deref(),
+        &[],
     )
     .await?;
     if !resp.status().is_success() {
@@ -205,14 +206,15 @@ pub async fn build_version_manifest(
                     .and_then(|v| v.as_str())
                     .map(String::from)
             });
-            let has_default_locale_file = default_locale
-                .as_ref()
-                .map(|dl| {
-                    files
-                        .iter()
-                        .any(|p| p.contains(&format!(".locale.{dl}.yaml")))
-                })
-                .unwrap_or(false);
+            // Build the locale-file suffix once (not per file) and match the path's
+            // suffix precisely — a substring `contains` could match unrelated paths.
+            let has_default_locale_file = match &default_locale {
+                Some(dl) => {
+                    let suffix = format!(".locale.{dl}.yaml");
+                    files.iter().any(|p| p.ends_with(&suffix))
+                }
+                None => false,
+            };
 
             if has_locale_data && !has_default_locale_file {
                 let mut locale = manifest.clone();

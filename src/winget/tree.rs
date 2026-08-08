@@ -51,6 +51,7 @@ async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse
         &url,
         Duration::from_secs(30),
         crate::utils::http::GITHUB_TOKEN.as_deref(),
+        &[],
     )
     .await?;
     if !resp.status().is_success() {

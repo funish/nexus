@@ -93,11 +93,13 @@ pub async fn get_index_db(db: &SharedDb, storage: &SharedStorage) -> Result<Conn
 }
 
 async fn refresh_index_db(db: &SharedDb, storage: &SharedStorage) -> Result<Connection> {
-    let resp = crate::utils::http::HTTP_CLIENT
-        .get(WINGET_SOURCE_MSIX_URL)
-        .timeout(Duration::from_secs(120))
-        .send()
-        .await?;
+    let resp = crate::utils::http::get_with_retry(
+        WINGET_SOURCE_MSIX_URL,
+        Duration::from_secs(120),
+        None,
+        &[],
+    )
+    .await?;
     if !resp.status().is_success() {
         anyhow::bail!("Failed to download source.msix: {}", resp.status());
     }

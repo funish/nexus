@@ -22,6 +22,11 @@ pub const WINGET_MANIFESTS_SHA_KEY: &str = "registry/winget/microsoft/winget-pkg
 /// Tree/SHA cache TTL in seconds (10 minutes).
 pub const WINGET_UPDATE_INTERVAL_SECS: i64 = 600;
 
+/// Edge cache directive for winget responses. winget data follows the 10-minute
+/// index TTL above, so a 5-minute edge cache stays conservative and matches the
+/// manifestSearch route.
+pub const WINGET_EDGE_CACHE_CONTROL: &str = "public, max-age=300";
+
 /// Page size for the versions endpoint.
 pub const WINGET_VERSIONS_PAGE_SIZE: usize = 25;
 

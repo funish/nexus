@@ -264,7 +264,7 @@ pub fn json_ok<T: Serialize>(body: &T) -> Response {
         StatusCode::OK,
         [
             ("content-type", "application/json"),
-            ("cache-control", "public, max-age=300"),
+            ("cache-control", super::constants::WINGET_EDGE_CACHE_CONTROL),
         ],
         serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string()),
     )

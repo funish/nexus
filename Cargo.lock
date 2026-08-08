@@ -2003,6 +2003,7 @@ dependencies = [
  "chrono",
  "dashmap 6.2.1",
  "flate2",
+ "futures",
  "lightningcss",
  "mime_guess",
  "node-semver",

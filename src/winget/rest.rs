@@ -165,7 +165,8 @@ pub struct PackageSingleResponse {
 // ── Version manifest (packageManifests endpoint) ──────────────────────────
 
 /// Internal merged version manifest (mirrors WinGetVersionManifest).
-#[derive(Debug, Clone, Serialize)]
+/// `Deserialize` so a cached merged result can be read back from storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct VersionManifest {
     pub package_version: String,
@@ -254,11 +255,17 @@ pub struct LocaleSingleResponse {
 
 // ── Response builders ──────────────────────────────────────────────────────
 
-/// Serialize a value as a 200 JSON response.
+/// Serialize a value as a 200 JSON response. winget data follows the 10-minute
+/// index TTL, so a 5-minute edge cache stays conservative and matches the
+/// manifestSearch route — without it, every winget endpoint but manifestSearch
+/// is revalidated on each request.
 pub fn json_ok<T: Serialize>(body: &T) -> Response {
     (
         StatusCode::OK,
-        [("content-type", "application/json")],
+        [
+            ("content-type", "application/json"),
+            ("cache-control", "public, max-age=300"),
+        ],
         serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string()),
     )
         .into_response()

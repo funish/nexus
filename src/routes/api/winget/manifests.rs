@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use futures::stream::{self, StreamExt};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -387,11 +388,24 @@ pub async fn handle_package_manifest(
         None => versions,
     };
 
-    let mut manifest_versions: Vec<VersionManifest> = Vec::new();
-    for version in &versions {
-        let Ok(Some(entry)) = build_version_manifest(&storage, &package_id, version).await else {
-            continue;
-        };
+    // Build all version manifests concurrently (mirrors the Promise.allSettled in the
+    // pre-Rust TS route). `buffered` preserves input order, so the descending version
+    // order from load_versions survives the fan-out.
+    let entries: Vec<Option<VersionManifest>> = stream::iter(versions.iter().cloned())
+        .map(|version| {
+            // Each build task needs its own handles: `map` is FnMut, so the captured
+            // Arc/String can't move into every future — clone per iteration instead.
+            let storage = storage.clone();
+            let package_id = package_id.clone();
+            async move { build_version_manifest(&storage, &package_id, &version).await }
+        })
+        .buffered(WINGET_MANIFEST_BUILD_CONCURRENCY)
+        .map(|res| res.ok().flatten())
+        .collect()
+        .await;
+
+    let mut manifest_versions: Vec<VersionManifest> = Vec::with_capacity(entries.len());
+    for entry in entries.into_iter().flatten() {
         // Channel filter.
         if let Some(channel) = &params.channel
             && entry.channel.as_deref() != Some(channel.as_str())

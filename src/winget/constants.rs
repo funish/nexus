@@ -31,5 +31,10 @@ pub const WINGET_INSTALLERS_PAGE_SIZE: usize = 25;
 /// Page size for the locales endpoint.
 pub const WINGET_LOCALES_PAGE_SIZE: usize = 25;
 
+/// Max concurrent version-manifest builds for the packageManifests endpoint. Each
+/// build fans out to a few file fetches; those are themselves capped by
+/// DOWNLOAD_SEMAPHORE, so this bounds only the number of builds in flight.
+pub const WINGET_MANIFEST_BUILD_CONCURRENCY: usize = 16;
+
 /// Default locale used when a manifest omits one.
 pub const WINGET_DEFAULT_LOCALE: &str = "en-US";

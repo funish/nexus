@@ -7,11 +7,14 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::future;
 use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 
 use crate::storage::SharedStorage;
+use crate::utils::cache::{cache_fresh, set_mtime};
+use crate::utils::concurrency::DOWNLOAD_SEMAPHORE;
 
 use super::constants::*;
 use super::rest::VersionManifest;
@@ -69,12 +72,18 @@ pub async fn fetch_manifest_content(
         return Ok(s);
     }
 
+    // Acquire a download slot only on a cache miss — manifest content is immutable,
+    // so repeat reads hit the cache and never consume a permit. This single gate
+    // bounds the concurrent fetches launched by build_version_manifest's join_all.
+    let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
+
     let url = format!("{WINGET_GITHUB_RAW_BASE}/{manifest_path}");
-    let resp = crate::utils::http::HTTP_CLIENT
-        .get(&url)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await?;
+    let resp = crate::utils::http::get_with_retry(
+        &url,
+        Duration::from_secs(30),
+        crate::utils::http::GITHUB_TOKEN.as_deref(),
+    )
+    .await?;
     if !resp.status().is_success() {
         anyhow::bail!("Failed to fetch manifest: {}", resp.status());
     }
@@ -123,15 +132,43 @@ pub async fn get_version_manifests(
 }
 
 /// Assemble a merged version manifest from all manifest files (mirrors buildVersionManifest).
+///
+/// The merged result is cached for the index TTL: parse + merge run once per version
+/// per window, so repeated packageManifests requests don't re-parse the same YAML.
+/// Manifest content is immutable per path, so the only staleness risk is a brand-new
+/// version's files appearing mid-window — the 10-minute TTL bounds it.
 pub async fn build_version_manifest(
     storage: &SharedStorage,
     package_id: &str,
     version: &str,
 ) -> Result<Option<VersionManifest>> {
+    let cache_key = format!("{WINGET_CACHE_PREFIX}/version-manifest/{package_id}/{version}");
+    if cache_fresh(storage, &cache_key, WINGET_UPDATE_INTERVAL_SECS).await
+        && let Some(bytes) = storage.get_raw(&cache_key).await
+        && let Ok(entry) = serde_json::from_slice::<VersionManifest>(&bytes)
+    {
+        return Ok(Some(entry));
+    }
+
     let files = get_version_manifests(storage, package_id, version).await?;
     if files.is_empty() {
         return Ok(None);
     }
+
+    // Fetch + parse every manifest file concurrently (mirrors the Promise.allSettled
+    // in manifest.ts). Per-file network concurrency is capped by DOWNLOAD_SEMAPHORE
+    // inside fetch_manifest_content, so unbounded join_all can't overwhelm GitHub.
+    let fetched: Vec<Option<(String, Value)>> =
+        future::join_all(files.iter().map(|path| async move {
+            let filename = path.rsplit('/').next()?.to_string();
+            let content = fetch_manifest_content(storage, path).await.ok()?;
+            let manifest = parse_yaml(&content).ok()?;
+            Some((filename, manifest))
+        }))
+        .await;
+    // Whether at least one file was fetched — gates caching so an all-failed
+    // build (rate limit, outage) isn't pinned as an empty-shell manifest.
+    let any_fetched = fetched.iter().any(|f| f.is_some());
 
     let mut entry = VersionManifest {
         package_version: version.to_string(),
@@ -141,17 +178,7 @@ pub async fn build_version_manifest(
         installers: None,
     };
 
-    for path in &files {
-        let filename = path.rsplit('/').next().unwrap_or("");
-        let content = match fetch_manifest_content(storage, path).await {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let manifest = match parse_yaml(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
+    for (filename, manifest) in fetched.into_iter().flatten() {
         if filename == format!("{package_id}.yaml") {
             entry.default_locale = manifest
                 .get("DefaultLocale")
@@ -205,9 +232,16 @@ pub async fn build_version_manifest(
                         .collect(),
                 );
             }
-        } else if LOCALE_FILE_RE.is_match(filename) {
+        } else if LOCALE_FILE_RE.is_match(&filename) {
             entry.locales.get_or_insert_with(Vec::new).push(manifest);
         }
+    }
+
+    // Cache only a non-degenerate result (any_fetched is false only when every
+    // file fetch failed); a cache write failure is otherwise non-fatal.
+    if any_fetched && let Ok(bytes) = serde_json::to_vec(&entry) {
+        storage.set_raw(&cache_key, &bytes).await;
+        set_mtime(storage, &cache_key).await;
     }
 
     Ok(Some(entry))

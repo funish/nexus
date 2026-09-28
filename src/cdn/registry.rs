@@ -12,11 +12,12 @@ use crate::storage::SharedStorage;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(CDN_FETCH_TIMEOUT_SECS);
 
 pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> Result<Value> {
+    let package_name = package_name.to_string();
     cached_json(
         storage,
         &format!("registry/npm/{package_name}"),
         META_CACHE_TTL_SECS,
-        async {
+        async move {
             let url = format!("{CDN_NPM_REGISTRY}/{package_name}");
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
@@ -33,11 +34,13 @@ pub async fn fetch_jsr_metadata(
     scope: &str,
     package: &str,
 ) -> Result<Value> {
+    let scope = scope.to_string();
+    let package = package.to_string();
     cached_json(
         storage,
         &format!("registry/jsr/{scope}/{package}"),
         META_CACHE_TTL_SECS,
-        async {
+        async move {
             let npm_name = format!("@jsr/{}__{}", scope, package);
             let url = format!("{CDN_JSR_REGISTRY}/{npm_name}");
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
@@ -55,11 +58,13 @@ pub async fn fetch_github_tags(
     owner: &str,
     repo: &str,
 ) -> Result<Vec<String>> {
+    let owner = owner.to_string();
+    let repo = repo.to_string();
     cached_json(
         storage,
         &format!("registry/gh/{owner}/{repo}/tags"),
         META_CACHE_TTL_SECS,
-        async {
+        async move {
             // GitHub tags API returns the *original* tag names (e.g. "v5.3.3"), which
             // raw.githubusercontent.com and codeload refs require. The jsDelivr
             // packages API normalizes away the "v" prefix and would 404 against GitHub
@@ -91,11 +96,12 @@ pub async fn fetch_github_tags(
 }
 
 pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Result<Value> {
+    let library = library.to_string();
     cached_json(
         storage,
         &format!("registry/cdnjs/{library}"),
         META_CACHE_TTL_SECS,
-        async {
+        async move {
             let url = format!(
                 "https://api.cdnjs.com/libraries/{library}?fields=version,versions,filename"
             );
@@ -123,11 +129,12 @@ pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
 }
 
 pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<Vec<String>> {
+    let scope = scope.to_string();
     cached_json(
         storage,
         &format!("registry/org/{scope}"),
         META_CACHE_TTL_SECS,
-        async {
+        async move {
             let url = format!("{CDN_NPM_REGISTRY}/-/org/{scope}/package");
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {

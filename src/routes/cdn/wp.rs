@@ -82,22 +82,30 @@ pub async fn handle_wp(
         return Ok(file_response(&svn_url, &cached, is_trunk, &headers));
     }
 
-    // Try WordPress SVN, then jsDelivr fallback.
-    let data = match try_fetch(&svn_url).await {
-        Some(d) => d,
-        None => match try_fetch(&jsdelivr_url).await {
-            Some(d) => d,
-            None => return Err(AppError::not_found("Resource not found")),
-        },
-    };
+    // Concurrent misses for the same path share one upstream attempt; this matters
+    // most for bursty first requests to the same plugin/theme asset.
+    let fetch_storage = storage.clone();
+    let fetch_key = cache_key.clone();
+    let fetch_svn_url = svn_url.clone();
+    let fetch_jsdelivr_url = jsdelivr_url.clone();
+    crate::utils::singleflight::run_once(&cache_key, move || async move {
+        if fetch_storage.get_raw(&fetch_key).await.is_some() {
+            return;
+        }
+        let data = match try_fetch(&fetch_svn_url).await {
+            Some(d) => Some(d),
+            None => try_fetch(&fetch_jsdelivr_url).await,
+        };
+        if let Some(data) = data {
+            fetch_storage.set_raw(&fetch_key, &data).await;
+        }
+    })
+    .await;
 
-    // Cache in the background without blocking the response.
-    let s = storage.clone();
-    let k = cache_key.clone();
-    let data_for_cache = data.clone();
-    tokio::spawn(async move {
-        s.set_raw(&k, &data_for_cache).await;
-    });
+    let data = storage
+        .get_raw(&cache_key)
+        .await
+        .ok_or_else(|| AppError::not_found("Resource not found"))?;
 
     Ok(file_response(&svn_url, &data, is_trunk, &headers))
 }

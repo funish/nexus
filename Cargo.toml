@@ -38,8 +38,8 @@ chrono = { version = "0.4", features = ["serde"] }
 rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
 bytes = "1"
 rolldown = "1.1"
-# oxc shares the exact version rolldown pins (0.135) — same toolchain, no second copy.
-oxc = { version = "0.135", default-features = false, features = ["minifier", "mangler", "codegen"] }
+# oxc shares the exact version rolldown pins (0.151) — same toolchain, no second copy.
+oxc = { version = "0.151", default-features = false, features = ["minifier", "mangler", "codegen"] }
 lightningcss = "1.0.0-alpha.71"
 regex = "1"
 url = "2"

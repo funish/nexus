@@ -15,6 +15,7 @@ use std::sync::LazyLock;
 use crate::storage::SharedStorage;
 use crate::utils::cache::{cache_fresh, set_mtime};
 use crate::utils::concurrency::DOWNLOAD_SEMAPHORE;
+use crate::utils::singleflight::run_once;
 
 use super::constants::*;
 use super::rest::VersionManifest;
@@ -72,26 +73,45 @@ pub async fn fetch_manifest_content(
         return Ok(s);
     }
 
-    // Acquire a download slot only on a cache miss — manifest content is immutable,
-    // so repeat reads hit the cache and never consume a permit. This single gate
-    // bounds the concurrent fetches launched by build_version_manifest's join_all.
-    let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
+    // A package-manifest response fans out to several files, and different requests
+    // can race on the same immutable path. Single-flight turns those misses into one
+    // Raw fetch; followers re-read storage after the leader writes it.
+    let storage_c = storage.clone();
+    let key_c = cache_key.clone();
+    let path_c = manifest_path.to_string();
+    crate::utils::singleflight::run_once(&cache_key, move || async move {
+        if let Some(cached) = storage_c.get_raw(&key_c).await
+            && String::from_utf8(cached).is_ok()
+        {
+            return;
+        }
 
-    let url = format!("{WINGET_GITHUB_RAW_BASE}/{manifest_path}");
-    let resp = crate::utils::http::get_with_retry(
-        &url,
-        Duration::from_secs(30),
-        crate::utils::http::GITHUB_TOKEN.as_deref(),
-        &[],
-    )
-    .await?;
-    if !resp.status().is_success() {
-        anyhow::bail!("Failed to fetch manifest: {}", resp.status());
-    }
+        // Acquire a download slot only on a cache miss — manifest content is immutable,
+        // so repeat reads hit the cache and never consume a permit. This single gate
+        // bounds the concurrent fetches launched by build_version_manifest's join_all.
+        let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
 
-    let content = resp.text().await?;
-    storage.set_raw(&cache_key, content.as_bytes()).await;
-    Ok(content)
+        let url = format!("{WINGET_GITHUB_RAW_BASE}/{path_c}");
+        if let Ok(resp) = crate::utils::http::get_with_retry(
+            &url,
+            Duration::from_secs(30),
+            crate::utils::http::GITHUB_TOKEN.as_deref(),
+            &[],
+        )
+        .await
+            && resp.status().is_success()
+            && let Ok(content) = resp.text().await
+        {
+            storage_c.set_raw(&key_c, content.as_bytes()).await;
+        }
+    })
+    .await;
+
+    storage
+        .get_raw(&cache_key)
+        .await
+        .and_then(|data| String::from_utf8(data).ok())
+        .ok_or_else(|| anyhow::anyhow!("manifest cache miss after single-flight: {manifest_path}"))
 }
 
 /// Parse YAML content into a JSON value (confbox parseYAML equivalent via serde_yaml).
@@ -134,10 +154,8 @@ pub async fn get_version_manifests(
 
 /// Assemble a merged version manifest from all manifest files (mirrors buildVersionManifest).
 ///
-/// The merged result is cached for the index TTL: parse + merge run once per version
-/// per window, so repeated packageManifests requests don't re-parse the same YAML.
-/// Manifest content is immutable per path, so the only staleness risk is a brand-new
-/// version's files appearing mid-window — the 10-minute TTL bounds it.
+/// The merged result has a soft TTL: after expiry, the previous assembled value is
+/// served while one background build re-reads immutable YAML and refreshes the cache.
 pub async fn build_version_manifest(
     storage: &SharedStorage,
     package_id: &str,
@@ -151,6 +169,59 @@ pub async fn build_version_manifest(
         return Ok(Some(entry));
     }
 
+    // Serve the previous assembled manifest while a single background build
+    // discovers paths, reads immutable YAML, parses, and refreshes the cache.
+    if let Some(bytes) = storage.get_raw(&cache_key).await
+        && let Ok(stale) = serde_json::from_slice::<VersionManifest>(&bytes)
+    {
+        let refresh = version_manifest_refresher(
+            storage.clone(),
+            cache_key,
+            package_id.to_string(),
+            version.to_string(),
+        );
+        tokio::spawn(refresh);
+        return Ok(Some(stale));
+    }
+
+    version_manifest_refresher(
+        storage.clone(),
+        cache_key.clone(),
+        package_id.to_string(),
+        version.to_string(),
+    )
+    .await;
+
+    storage
+        .get_raw(&cache_key)
+        .await
+        .and_then(|bytes| serde_json::from_slice::<VersionManifest>(&bytes).ok())
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("version manifest unavailable after single-flight"))
+}
+
+async fn version_manifest_refresher(
+    storage: SharedStorage,
+    cache_key: String,
+    package_id: String,
+    version: String,
+) {
+    let run_key = cache_key.clone();
+    run_once(&run_key, move || async move {
+        if cache_fresh(&storage, &cache_key, WINGET_UPDATE_INTERVAL_SECS).await {
+            return;
+        }
+        let _ = rebuild_version_manifest(&storage, &package_id, &version).await;
+    })
+    .await;
+}
+
+async fn rebuild_version_manifest(
+    storage: &SharedStorage,
+    package_id: &str,
+    version: &str,
+) -> Result<Option<VersionManifest>> {
+    let cache_key = format!("{WINGET_CACHE_PREFIX}/version-manifest/{package_id}/{version}");
     let files = get_version_manifests(storage, package_id, version).await?;
     if files.is_empty() {
         return Ok(None);

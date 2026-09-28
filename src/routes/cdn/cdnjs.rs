@@ -299,25 +299,40 @@ async fn get_cdnjs_file(
         return Ok(cached);
     }
 
-    let url = format!(
-        "https://raw.githubusercontent.com/cdnjs/cdnjs/refs/heads/master/ajax/libs/{library}/{version}/{filepath}"
-    );
-    let data = download_tarball(&url)
+    // The cdnjs mirror serves immutable versioned files. Single-flight dedupes a
+    // burst of misses for the same file into one raw GitHub request.
+    let fetch_storage = storage.clone();
+    let fetch_key = cache_key.clone();
+    let fetch_base = cache_base.to_string();
+    let fetch_library = library.to_string();
+    let fetch_version = version.to_string();
+    let fetch_filepath = filepath.to_string();
+    crate::utils::singleflight::run_once(&cache_key, move || async move {
+        if fetch_storage.get_raw(&fetch_key).await.is_some() {
+            return;
+        }
+        let url = format!(
+            "https://raw.githubusercontent.com/cdnjs/cdnjs/refs/heads/master/ajax/libs/{fetch_library}/{fetch_version}/{fetch_filepath}"
+        );
+        if let Ok(data) = download_tarball(&url).await {
+            fetch_storage.set_raw(&fetch_key, &data).await;
+            // Warm the version file list only after the leader caches the file, so
+            // followers do not launch duplicate warming requests.
+            let s = fetch_storage.clone();
+            let lib = fetch_library;
+            let ver = fetch_version;
+            let base = fetch_base;
+            tokio::spawn(async move {
+                let _ = ensure_cdnjs_file_list_cached(&s, &lib, &ver, &base).await;
+            });
+        }
+    })
+    .await;
+
+    storage
+        .get_raw(&cache_key)
         .await
-        .map_err(|_| AppError::not_found("File not found"))?;
-
-    storage.set_raw(&cache_key, &data).await;
-
-    // Background-warm the version file list for directory listings.
-    let s = storage.clone();
-    let lib = library.to_string();
-    let ver = version.to_string();
-    let base = cache_base.to_string();
-    tokio::spawn(async move {
-        let _ = ensure_cdnjs_file_list_cached(&s, &lib, &ver, &base).await;
-    });
-
-    Ok(data)
+        .ok_or_else(|| AppError::not_found("File not found"))
 }
 
 /// Ensure the version file list is cached, returning it from cache or the cdnjs API.
@@ -333,36 +348,56 @@ async fn ensure_cdnjs_file_list_cached(
         return Ok(files.into_iter().map(|f| f.name).collect());
     }
 
-    let data = fetch_cdnjs_files(library, version).await?;
-    let files: Vec<String> = data["files"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let fetch_storage = storage.clone();
+    let fetch_base = cache_base.to_string();
+    let fetch_library = library.to_string();
+    let fetch_version = version.to_string();
+    crate::utils::singleflight::run_once(cache_base, move || async move {
+        if fetch_storage
+            .get_meta(&fetch_base)
+            .await
+            .and_then(|meta| meta.files)
+            .is_some()
+        {
+            return;
+        }
+        if let Ok(data) = fetch_cdnjs_files(&fetch_library, &fetch_version).await {
+            let files: Vec<String> = data["files"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            fetch_storage
+                .set_meta(
+                    &fetch_base,
+                    &CacheMeta {
+                        files: Some(
+                            files
+                                .iter()
+                                .map(|name| CdnFileMeta {
+                                    name: name.clone(),
+                                    size: 0,
+                                    integrity: None,
+                                })
+                                .collect(),
+                        ),
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
+    })
+    .await;
 
     storage
-        .set_meta(
-            cache_base,
-            &CacheMeta {
-                files: Some(
-                    files
-                        .iter()
-                        .map(|name| CdnFileMeta {
-                            name: name.clone(),
-                            size: 0,
-                            integrity: None,
-                        })
-                        .collect(),
-                ),
-                ..Default::default()
-            },
-        )
-        .await;
-
-    Ok(files)
+        .get_meta(cache_base)
+        .await
+        .and_then(|meta| meta.files)
+        .map(|files| files.into_iter().map(|f| f.name).collect())
+        .ok_or_else(|| anyhow::anyhow!("cdnjs file list unavailable after single-flight"))
 }
 
 /// Read the cached version file list (empty if not yet cached).

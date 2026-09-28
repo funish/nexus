@@ -1,9 +1,9 @@
-//! GitHub Trees API access with TTL caching + single-flight (mirrors winget/tree.ts).
+//! GitHub Trees API access with stale-while-revalidate (mirrors winget/tree.ts).
 //!
 //! Discovers manifest file paths under `manifests/<letter>/...` and caches the
-//! letter-directory SHAs and tree paths with a 10-minute TTL. Concurrent cache
-//! misses for the same key share one API call (single-flight), so a burst of
-//! packageManifests builds fires one tree request per key — not one per build,
+//! letter-directory SHAs and tree paths with a 10-minute soft TTL. After expiry,
+//! the last good value is returned while one single-flight refresh runs, so a burst
+//! of packageManifests builds fires at most one tree request per key — not one per build,
 //! which would burn the GitHub budget (60/h anonymous, 5000/h authenticated).
 
 use std::collections::HashMap;
@@ -60,20 +60,42 @@ async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse
     Ok(resp.json().await?)
 }
 
-/// TTL-cached value with single-flight dedup. Concurrent misses for `key` share
-/// one `fetch`: the leader runs it and writes storage; followers wait on the
-/// single-flight broadcast, then re-read. Without this, N concurrent
-/// packageManifests builds each fire their own tree API request for the same
-/// letter/package, wasting the GitHub budget.
-async fn cached_singleflight<T>(
-    storage: &SharedStorage,
-    key: &str,
-    fetch: impl std::future::Future<Output = Result<T>>,
-) -> Result<T>
+/// Refresh a tree-cache entry through single-flight. Concurrent refreshes for
+/// `key` share one `fetch`: the leader runs it and writes storage; followers wait
+/// on the single-flight broadcast, then re-read.
+async fn refresh_singleflight<T, F>(storage: SharedStorage, key: String, fetch: F)
 where
-    T: serde::Serialize + DeserializeOwned,
+    T: serde::Serialize + DeserializeOwned + Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
 {
-    // Fast path.
+    let run_key = key.clone();
+    crate::utils::singleflight::run_once(&run_key, move || async move {
+        // Double-check after winning leadership — another leader may have just
+        // populated the cache while this one waited.
+        if cache_fresh(&storage, &key, WINGET_UPDATE_INTERVAL_SECS).await
+            && storage.get_raw(&key).await.is_some()
+        {
+            return;
+        }
+        if let Ok(v) = fetch.await
+            && let Ok(bytes) = serde_json::to_vec(&v)
+        {
+            storage.set_raw(&key, &bytes).await;
+            set_mtime(&storage, &key).await;
+        }
+    })
+    .await;
+}
+
+/// TTL-cached value with stale-while-revalidate. A fresh value is returned
+/// directly. A stale value is returned immediately while one background refresh
+/// runs; only a complete miss blocks on the fetch. This keeps the first request
+/// after the TTL fast without letting concurrent requests duplicate GitHub calls.
+async fn cached_singleflight<T, F>(storage: &SharedStorage, key: &str, fetch: F) -> Result<T>
+where
+    T: serde::Serialize + DeserializeOwned + Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
     if cache_fresh(storage, key, WINGET_UPDATE_INTERVAL_SECS).await
         && let Some(data) = storage.get_raw(key).await
         && let Ok(v) = serde_json::from_slice::<T>(&data)
@@ -81,25 +103,16 @@ where
         return Ok(v);
     }
 
-    let storage_c = storage.clone();
-    let key_c = key.to_string();
-    crate::utils::singleflight::run_once(key, move || async move {
-        // Double-check after winning leadership — another leader may have just
-        // populated the cache while this one waited.
-        if cache_fresh(&storage_c, &key_c, WINGET_UPDATE_INTERVAL_SECS).await
-            && storage_c.get_raw(&key_c).await.is_some()
-        {
-            return;
-        }
-        if let Ok(v) = fetch.await
-            && let Ok(bytes) = serde_json::to_vec(&v)
-        {
-            storage_c.set_raw(&key_c, &bytes).await;
-            set_mtime(&storage_c, &key_c).await;
-        }
-    })
-    .await;
+    if let Some(data) = storage.get_raw(key).await
+        && let Ok(stale) = serde_json::from_slice::<T>(&data)
+    {
+        let storage = storage.clone();
+        let key = key.to_string();
+        tokio::spawn(refresh_singleflight(storage, key, fetch));
+        return Ok(stale);
+    }
 
+    refresh_singleflight(storage.clone(), key.to_string(), fetch).await;
     storage
         .get_raw(key)
         .await
@@ -126,8 +139,9 @@ pub async fn get_github_tree_paths(
 /// Cached letter-directory SHAs (a-z, 0-9) under manifests/ (mirrors getLetterDirectoryShas).
 pub async fn get_letter_directory_shas(storage: &SharedStorage) -> Result<HashMap<String, String>> {
     let cache_key = format!("{WINGET_CACHE_PREFIX}/letter-shas.json");
-    cached_singleflight(storage, &cache_key, async {
-        let manifests_sha = fetch_manifests_sha(storage).await?;
+    let fetch_storage = storage.clone();
+    cached_singleflight(storage, &cache_key, async move {
+        let manifests_sha = fetch_manifests_sha(&fetch_storage).await?;
         let tree = get_github_tree(&manifests_sha, false).await?;
         let mut shas = HashMap::new();
         for item in &tree.tree {
@@ -158,4 +172,48 @@ pub async fn fetch_manifests_sha(storage: &SharedStorage) -> Result<String> {
         Ok(manifests.sha.clone())
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::CacheMeta;
+    use crate::storage::fs::FsStorage;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn stale_tree_is_served_while_background_refresh_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage: SharedStorage = Arc::new(FsStorage::new(tmp.path().to_str().unwrap()));
+        let key = format!("{WINGET_CACHE_PREFIX}/test-stale");
+        storage.set_raw(&key, br#""old""#).await;
+        storage
+            .set_meta(
+                &key,
+                &CacheMeta {
+                    mtime: Some((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339()),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let value = cached_singleflight(&storage, &key, {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                Ok("new".to_string())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(value, "old");
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let refreshed = storage.get_raw(&key).await.unwrap();
+        assert_eq!(refreshed, br#""new""#.to_vec());
+    }
 }

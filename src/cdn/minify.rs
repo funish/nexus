@@ -1,7 +1,7 @@
 //! JS/CSS minification.
 //!
 //! JS uses oxc — the same toolchain rolldown's internal minifier is built on
-//! (pinned to the same 0.135 version via Cargo.lock), so there is no second
+//! (pinned to the same 0.151 version via Cargo.lock), so there is no second
 //! copy of the parser/minifier in the dependency tree. CSS uses lightningcss,
 //! which oxc does not cover.
 
@@ -26,7 +26,7 @@ pub fn minify_js(filename: &str, code: &str) -> String {
     };
 
     let parsed = Parser::new(&allocator, code, source_type).parse();
-    if !parsed.errors.is_empty() {
+    if !parsed.diagnostics.is_empty() {
         return code.to_string();
     }
 
@@ -36,6 +36,7 @@ pub fn minify_js(filename: &str, code: &str) -> String {
     // tree-shaking unused top-level functions (which `smallest` does) would be unsafe.
     let options = MinifierOptions {
         mangle: Some(MangleOptions::default()),
+        mangle_properties: None,
         compress: Some(CompressOptions::default()),
     };
     let minified = Minifier::new(options).minify(&allocator, &mut program);

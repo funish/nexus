@@ -440,8 +440,14 @@ async fn load_versions(
     storage: &SharedStorage,
     package_id: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let conn = get_index_db(db, storage).await?;
-    get_package_versions(&conn, package_id)
+    let database = get_index_db(db, storage).await?;
+    let package_id = package_id.to_string();
+    let versions = tokio::task::spawn_blocking(move || {
+        let conn = database.lock();
+        get_package_versions(&conn, &package_id)
+    })
+    .await??;
+    Ok(versions)
 }
 
 /// Find a manifest path whose final path segment equals `basename`.

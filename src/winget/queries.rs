@@ -1,33 +1,41 @@
 //! index.db queries: build the search index and look up packages/versions.
 
 use rusqlite::{Connection, params};
-use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::rest::ManifestVersion;
 use super::search::WinGetSearchEntry;
 
 const DELIM: &str = "\x1E";
+const VERSION_DELIM: &str = "\x1F";
 
-/// Compiled once: coerce_semver is called per version-comparison during sort,
-/// so a per-call `Regex::new` dominated build time (millions of recompiles).
+/// Compiled once: sorting builds one key per version, so repeated regex
+/// compilation would otherwise dominate index construction.
 static SEMVER_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?").unwrap());
 
 /// Build the unified search index (mirrors search.ts buildSearchIndex).
-/// Fetches all fields in one query so search responses need no second DB hit.
-///
-/// Six CTEs pre-aggregate every multi-valued field once, all per package `id` —
-/// the main scan JOINs them instead of re-running a correlated subquery per row.
-/// Since every field is id-scoped, each entry is complete on its first row, so no
-/// per-row accumulation is needed in Rust.
+/// Aggregates multi-valued fields and versions by package id in SQLite so the
+/// Rust-side scan receives one row per package rather than one per manifest.
 pub fn build_search_index(conn: &Connection) -> anyhow::Result<Vec<WinGetSearchEntry>> {
     let sql = r#"
     WITH
+    id_names AS (
+      SELECT k, GROUP_CONCAT(name, ?1) AS v FROM (
+        SELECT DISTINCT id AS k, name FROM manifest
+      ) GROUP BY k
+    ),
+    id_publishers AS (
+      SELECT k, GROUP_CONCAT(norm_publisher, ?1) AS v FROM (
+        SELECT DISTINCT mm.id AS k, np.norm_publisher FROM manifest mm
+        JOIN norm_publishers_map npm ON npm.manifest = mm.rowid
+        JOIN norm_publishers np ON np.rowid = npm.norm_publisher
+      ) GROUP BY k
+    ),
     id_monikers AS (
-      SELECT m.id AS k, GROUP_CONCAT(mk.moniker, ?1) AS v FROM (
-        SELECT DISTINCT id, moniker FROM manifest
-      ) m JOIN monikers mk ON mk.rowid = m.moniker WHERE mk.moniker != '' GROUP BY m.id
+      SELECT k, GROUP_CONCAT(m.moniker, ?1) AS v FROM (
+        SELECT DISTINCT id AS k, moniker FROM manifest
+      ) m JOIN monikers mk ON mk.rowid = m.moniker WHERE mk.moniker != '' GROUP BY k
     ),
     id_tags AS (
       SELECT k, GROUP_CONCAT(tag, ?1) AS v FROM (
@@ -58,114 +66,122 @@ pub fn build_search_index(conn: &Connection) -> anyhow::Result<Vec<WinGetSearchE
         SELECT DISTINCT mm.id AS k, uc.upgradecode FROM manifest mm
         JOIN upgradecodes_map ucm ON ucm.manifest = mm.rowid JOIN upgradecodes uc ON uc.rowid = ucm.upgradecode
       ) GROUP BY k
+    ),
+    id_version_rows AS (
+      SELECT DISTINCT
+        m.id AS k,
+        v.version || char(31) || COALESCE(ch.channel, '') AS entry
+      FROM manifest m
+      JOIN versions v ON v.rowid = m.version
+      LEFT JOIN channels ch ON ch.rowid = m.channel
+    ),
+    id_versions AS (
+      SELECT k, GROUP_CONCAT(entry, ?1) AS v FROM id_version_rows GROUP BY k
     )
-    SELECT DISTINCT i.id, n.name, np.norm_publisher,
+    SELECT i.id, n.v AS names, ip.v AS norm_publishers,
       im.v AS monikers, it.v AS tags, ic.v AS commands,
-      v.version, ch.channel,
+      iv.v AS versions,
       ipf.v AS pfns, ipc.v AS productcodes, iuc.v AS upgradecodes
-    FROM manifest m
-    JOIN ids i ON m.id = i.rowid
-    JOIN names n ON m.name = n.rowid
-    JOIN versions v ON m.version = v.rowid
-    LEFT JOIN channels ch ON m.channel = ch.rowid
-    LEFT JOIN norm_publishers_map npm ON npm.manifest = m.rowid
-    LEFT JOIN norm_publishers np ON np.rowid = npm.norm_publisher
-    LEFT JOIN id_monikers im ON im.k = m.id
-    LEFT JOIN id_tags it ON it.k = m.id
-    LEFT JOIN id_commands ic ON ic.k = m.id
-    LEFT JOIN id_pfns ipf ON ipf.k = m.id
-    LEFT JOIN id_productcodes ipc ON ipc.k = m.id
-    LEFT JOIN id_upgradecodes iuc ON iuc.k = m.id
+    FROM ids i
+    JOIN id_names n ON n.k = i.rowid
+    LEFT JOIN id_publishers ip ON ip.k = i.rowid
+    LEFT JOIN id_monikers im ON im.k = i.rowid
+    LEFT JOIN id_tags it ON it.k = i.rowid
+    LEFT JOIN id_commands ic ON ic.k = i.rowid
+    LEFT JOIN id_versions iv ON iv.k = i.rowid
+    LEFT JOIN id_pfns ipf ON ipf.k = i.rowid
+    LEFT JOIN id_productcodes ipc ON ipc.k = i.rowid
+    LEFT JOIN id_upgradecodes iuc ON iuc.k = i.rowid
     "#;
 
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![DELIM], |row| {
         Ok(RowData {
             id: row.get(0)?,
-            name: row.get(1)?,
-            norm_publisher: row.get::<_, Option<String>>(2)?,
+            names: row.get::<_, Option<String>>(1)?,
+            norm_publishers: row.get::<_, Option<String>>(2)?,
             monikers: row.get::<_, Option<String>>(3)?,
             tags: row.get::<_, Option<String>>(4)?,
             commands: row.get::<_, Option<String>>(5)?,
-            version: row.get(6)?,
-            channel: row.get::<_, Option<String>>(7)?,
-            pfns: row.get::<_, Option<String>>(8)?,
-            productcodes: row.get::<_, Option<String>>(9)?,
-            upgradecodes: row.get::<_, Option<String>>(10)?,
+            versions: row.get::<_, Option<String>>(6)?,
+            pfns: row.get::<_, Option<String>>(7)?,
+            productcodes: row.get::<_, Option<String>>(8)?,
+            upgradecodes: row.get::<_, Option<String>>(9)?,
         })
     })?;
 
-    let mut entry_map: HashMap<String, WinGetSearchEntry> = HashMap::new();
+    let mut entries = Vec::new();
     for row in rows {
         let r = row?;
-        let entry = entry_map.entry(r.id.clone()).or_insert_with(|| {
-            let publisher = r
-                .norm_publisher
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| r.id.split('.').next().unwrap_or("").to_string());
-            // Every multi-valued field is aggregated by id in the CTEs, so the first
-            // row already carries the complete value — no per-row accumulation.
-            WinGetSearchEntry {
-                id: r.id.clone(),
-                name: r.name.clone(),
-                publisher,
-                monikers: split_delim(&r.monikers),
-                tags: split_delim(&r.tags),
-                commands: split_delim(&r.commands),
-                package_family_names: split_delim(&r.pfns),
-                product_codes: split_delim(&r.productcodes),
-                upgrade_codes: split_delim(&r.upgradecodes),
-                versions: Vec::new(),
-            }
+        let name = split_delim(&r.names).into_iter().next().unwrap_or_default();
+        let publisher = split_delim(&r.norm_publishers)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| r.id.split('.').next().unwrap_or("").to_string());
+        entries.push(WinGetSearchEntry {
+            id: r.id,
+            name,
+            publisher,
+            monikers: split_delim(&r.monikers),
+            tags: split_delim(&r.tags),
+            commands: split_delim(&r.commands),
+            package_family_names: split_delim(&r.pfns),
+            product_codes: split_delim(&r.productcodes),
+            upgrade_codes: split_delim(&r.upgradecodes),
+            versions: parse_versions(&r.versions),
         });
-
-        // Deduplicate versions (version + channel).
-        let already = entry
-            .versions
-            .iter()
-            .any(|v| v.package_version == r.version && v.channel == r.channel);
-        if !already {
-            entry.versions.push(ManifestVersion {
-                package_version: r.version.clone(),
-                channel: r.channel.clone().filter(|c| !c.is_empty()),
-            });
-        }
     }
 
-    let mut entries: Vec<WinGetSearchEntry> = entry_map.into_values().collect();
-    for e in &mut entries {
-        e.versions
-            .sort_by(|a, b| compare_version(&b.package_version, &a.package_version));
+    for entry in &mut entries {
+        let mut versions = entry
+            .versions
+            .drain(..)
+            .map(|version| (version_sort_key(&version.package_version), version))
+            .collect::<Vec<_>>();
+        versions.sort_by(|a, b| compare_version_keys(&b.0, &a.0));
+        entry.versions = versions.into_iter().map(|(_, version)| version).collect();
     }
     Ok(entries)
 }
 
 struct RowData {
     id: String,
-    name: String,
-    norm_publisher: Option<String>,
+    names: Option<String>,
+    norm_publishers: Option<String>,
     monikers: Option<String>,
     tags: Option<String>,
     commands: Option<String>,
-    version: String,
-    channel: Option<String>,
+    versions: Option<String>,
     pfns: Option<String>,
     productcodes: Option<String>,
     upgradecodes: Option<String>,
 }
 
-/// Split on DELIM and deduplicate, preserving first-seen order.
+/// Decode the SQLite-aggregated `version || channel` entries.
+fn parse_versions(s: &Option<String>) -> Vec<ManifestVersion> {
+    let Some(s) = s else {
+        return Vec::new();
+    };
+    s.split(DELIM)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let (version, channel) = entry.split_once(VERSION_DELIM).unwrap_or((entry, ""));
+            (!version.is_empty()).then_some(ManifestVersion {
+                package_version: version.to_string(),
+                channel: (!channel.is_empty()).then(|| channel.to_string()),
+            })
+        })
+        .collect()
+}
+
+/// Split SQLite's aggregated values. Each SQL CTE already deduplicates entries.
 fn split_delim(s: &Option<String>) -> Vec<String> {
     match s {
-        Some(s) if !s.is_empty() => {
-            let mut seen: HashSet<&str> = HashSet::new();
-            s.split(DELIM)
-                .filter(|x| !x.is_empty())
-                .filter(|x| seen.insert(*x))
-                .map(|x| x.to_string())
-                .collect()
-        }
+        Some(s) if !s.is_empty() => s
+            .split(DELIM)
+            .filter(|x| !x.is_empty())
+            .map(String::from)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -177,6 +193,32 @@ pub fn compare_version(a: &str, b: &str) -> std::cmp::Ordering {
     }
     let pa: Vec<u64> = a.split('.').filter_map(|x| x.parse().ok()).collect();
     let pb: Vec<u64> = b.split('.').filter_map(|x| x.parse().ok()).collect();
+    let len = pa.len().max(pb.len());
+    for i in 0..len {
+        let x = pa.get(i).copied().unwrap_or(0);
+        let y = pb.get(i).copied().unwrap_or(0);
+        match x.cmp(&y) {
+            std::cmp::Ordering::Equal => continue,
+            o => return o,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+type VersionSortKey = (Option<semver::Version>, Vec<u64>);
+
+fn version_sort_key(v: &str) -> VersionSortKey {
+    (
+        coerce_semver(v),
+        v.split('.').filter_map(|x| x.parse().ok()).collect(),
+    )
+}
+
+fn compare_version_keys(a: &VersionSortKey, b: &VersionSortKey) -> std::cmp::Ordering {
+    if let (Some(sa), Some(sb)) = (&a.0, &b.0) {
+        return sa.cmp(sb);
+    }
+    let (pa, pb) = (&a.1, &b.1);
     let len = pa.len().max(pb.len());
     for i in 0..len {
         let x = pa.get(i).copied().unwrap_or(0);
@@ -241,7 +283,13 @@ mod tests {
             return;
         }
         let t_open = std::time::Instant::now();
-        let conn = crate::winget::db::open_db(path).expect("open_db");
+        let conn = Connection::open(path).expect("open index.db");
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(30));
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS tags_map_manifest_idx ON tags_map(manifest);
+             CREATE INDEX IF NOT EXISTS commands_map_manifest_idx ON commands_map(manifest);",
+        )
+        .expect("initialize query indexes");
         eprintln!("[timing] open_db: {:.3}s", t_open.elapsed().as_secs_f64());
         let t0 = std::time::Instant::now();
         let index = build_search_index(&conn).expect("build_search_index");

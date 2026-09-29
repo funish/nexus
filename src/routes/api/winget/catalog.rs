@@ -220,8 +220,13 @@ pub async fn handle_package(
     Path(package_id): Path<String>,
 ) -> Response {
     let result = async {
-        let conn = get_index_db(&db, &storage).await?;
-        let exists = package_exists(&conn, &package_id)?;
+        let database = get_index_db(&db, &storage).await?;
+        let package_id = package_id.clone();
+        let exists = tokio::task::spawn_blocking(move || {
+            let conn = database.lock();
+            package_exists(&conn, &package_id)
+        })
+        .await??;
         anyhow::Ok(exists)
     }
     .await;

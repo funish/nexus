@@ -14,6 +14,18 @@ use anyhow::Result;
 pub static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent("Funish Nexus")
+        // Fail fast on TCP connect instead of hanging for the OS default (~2 min).
+        .connect_timeout(Duration::from_secs(10))
+        // HTTP/2 keep-alive: sends PING frames so dead upstream connections
+        // (NAT timeout, proxy drop) are detected instead of hanging until the
+        // per-request timeout. Enables connection reuse across CDN + winget.
+        .http2_keep_alive_interval(Duration::from_secs(30))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
+        // Cap idle connections per host to bound memory. 32 covers all
+        // concurrent upstreams (npm/jsr/gh/cdnjs/raw/winget) under the
+        // DOWNLOAD_SEMAPHORE limit of 50.
+        .pool_max_idle_per_host(32)
         .build()
         .expect("failed to build HTTP client")
 });
@@ -76,8 +88,8 @@ pub async fn get_with_retry(
         if status.is_success() || !should_retry(status) || attempt >= MAX_RETRIES {
             return Ok(resp);
         }
-        let wait = retry_after(resp.headers())
-            .unwrap_or_else(|| Duration::from_millis(200 << attempt));
+        let wait =
+            retry_after(resp.headers()).unwrap_or_else(|| Duration::from_millis(200 << attempt));
         attempt += 1;
         tokio::time::sleep(wait).await;
     }

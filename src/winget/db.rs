@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,11 +34,30 @@ fn index_db_refresh_key() -> String {
 
 pub type SharedDb = Arc<Mutex<Option<CachedDb>>>;
 
-/// A cloneable handle to one immutable SQLite snapshot. Dropping the final handle
-/// closes the connection before [`SnapshotFile`] removes the backing file.
+/// Number of read-only SQLite connections in the pool. Concurrent reads on a
+/// read-only database are safe; multiple connections remove the single-mutex
+/// bottleneck for per-request `package_exists` / version queries. Override via
+/// `NEXUS_DB_POOL_SIZE`.
+fn read_pool_size() -> usize {
+    std::env::var("NEXUS_DB_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get().min(4))
+                .unwrap_or(4)
+        })
+}
+
+/// A cloneable handle to a pool of read-only connections over one immutable
+/// SQLite snapshot. `lock()` round-robins across the pool so concurrent
+/// requests don't serialize on a single mutex. Dropping the final handle closes
+/// all connections before [`SnapshotFile`] removes the backing file.
 #[derive(Clone)]
 pub struct Database {
-    connection: Arc<Mutex<Connection>>,
+    connections: Arc<Vec<Mutex<Connection>>>,
+    next: Arc<AtomicUsize>,
     _snapshot: Arc<SnapshotFile>,
 }
 
@@ -52,8 +72,10 @@ impl Drop for SnapshotFile {
 }
 
 impl Database {
+    /// Acquire a read-only connection, distributing across the pool round-robin.
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.connection
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.connections.len();
+        self.connections[idx]
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
@@ -72,7 +94,19 @@ pub fn create_shared_db() -> SharedDb {
 
 /// Initialize a source database once, then expose it as read-only. Index creation
 /// is deliberately not repeated on request paths.
-fn open_snapshot(path: &PathBuf, build_indexes: bool) -> Result<Connection> {
+/// Open one read-only connection over the snapshot.
+fn open_read_connection(path: &PathBuf) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let _ = conn.busy_timeout(Duration::from_secs(30));
+    Ok(conn)
+}
+
+/// Initialize a source database once, then expose it as a read-only pool.
+/// Index creation is deliberately not repeated on request paths.
+fn open_snapshot(path: &PathBuf, build_indexes: bool) -> Result<Vec<Connection>> {
     if build_indexes {
         let conn = Connection::open_with_flags(
             path,
@@ -90,12 +124,12 @@ fn open_snapshot(path: &PathBuf, build_indexes: bool) -> Result<Connection> {
         }
     }
 
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    let _ = conn.busy_timeout(Duration::from_secs(30));
-    Ok(conn)
+    let pool_size = read_pool_size();
+    let mut connections = Vec::with_capacity(pool_size);
+    for _ in 0..pool_size {
+        connections.push(open_read_connection(path)?);
+    }
+    Ok(connections)
 }
 
 fn now_secs() -> Result<u64> {
@@ -159,9 +193,10 @@ fn create_database(data: &[u8], build_indexes: bool) -> Result<Database> {
     let path = temp.into_temp_path().keep()?;
     let snapshot = Arc::new(SnapshotFile { path: path.clone() });
 
-    let connection = open_snapshot(&path, build_indexes)?;
+    let connections = open_snapshot(&path, build_indexes)?;
     Ok(Database {
-        connection: Arc::new(Mutex::new(connection)),
+        connections: Arc::new(connections.into_iter().map(Mutex::new).collect()),
+        next: Arc::new(AtomicUsize::new(0)),
         _snapshot: snapshot,
     })
 }

@@ -220,6 +220,10 @@ All configuration is via environment variables (see [`.env.example`](./.env.exam
 | `WINGET_SOURCE_MSIX_URL` | official CDN URL | `source.msix` containing `Public/index.db` for the package catalog |
 | `WINGET_GITHUB_REPO` | `microsoft/winget-pkgs` | GitHub repository containing the matching manifests tree |
 | `WINGET_GITHUB_BRANCH` | `master` | Branch of `WINGET_GITHUB_REPO` used for manifest YAML files |
+| `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL (package metadata / org listings) |
+| `JSR_REGISTRY_URL` | `https://npm.jsr.io` | JSR npm-compatible registry base URL |
+| `GITHUB_API_BASE_URL` | `https://api.github.com` | GitHub REST API base URL (repo tags for version resolution) |
+| `CDNJS_API_BASE_URL` | `https://api.cdnjs.com` | cdnjs API base URL (library / version metadata) |
 | `GITHUB_TOKEN` | — | Optional; raises GitHub API rate limits for WinGet manifest/tree fetching |
 | `S3_ACCESS_KEY_ID` | — | S3 access key (enables S3 storage when all S3_* are set) |
 | `S3_SECRET_ACCESS_KEY` | — | S3 secret key |

@@ -3,10 +3,12 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::Value;
 
+use super::constants::{
+    CDN_FETCH_TIMEOUT_SECS, cdnjs_api_base, github_api_base, jsr_registry, npm_registry,
+};
+use crate::storage::SharedStorage;
 use crate::utils::cache::{META_CACHE_TTL_SECS, cached_json};
 use crate::utils::http::{GITHUB_TOKEN, get_with_retry};
-use super::constants::{CDN_FETCH_TIMEOUT_SECS, CDN_JSR_REGISTRY, CDN_NPM_REGISTRY};
-use crate::storage::SharedStorage;
 
 /// Per-request timeout for registry metadata fetches.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(CDN_FETCH_TIMEOUT_SECS);
@@ -18,7 +20,7 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         &format!("registry/npm/{package_name}"),
         META_CACHE_TTL_SECS,
         async move {
-            let url = format!("{CDN_NPM_REGISTRY}/{package_name}");
+            let url = format!("{}/{package_name}", npm_registry());
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Package not found: {package_name}");
@@ -42,7 +44,7 @@ pub async fn fetch_jsr_metadata(
         META_CACHE_TTL_SECS,
         async move {
             let npm_name = format!("@jsr/{}__{}", scope, package);
-            let url = format!("{CDN_JSR_REGISTRY}/{npm_name}");
+            let url = format!("{}/{npm_name}", jsr_registry());
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("JSR package not found: @{scope}/{package}");
@@ -69,7 +71,10 @@ pub async fn fetch_github_tags(
             // raw.githubusercontent.com and codeload refs require. The jsDelivr
             // packages API normalizes away the "v" prefix and would 404 against GitHub
             // when building tarball/raw URLs.
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/tags?per_page=100");
+            let url = format!(
+                "{}/repos/{owner}/{repo}/tags?per_page=100",
+                github_api_base()
+            );
             let resp = get_with_retry(
                 &url,
                 FETCH_TIMEOUT,
@@ -103,7 +108,8 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
         META_CACHE_TTL_SECS,
         async move {
             let url = format!(
-                "https://api.cdnjs.com/libraries/{library}?fields=version,versions,filename"
+                "{}/libraries/{library}?fields=version,versions,filename",
+                cdnjs_api_base()
             );
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
@@ -120,7 +126,7 @@ pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
         .acquire()
         .await
         .unwrap();
-    let url = format!("https://api.cdnjs.com/libraries/{library}/{version}");
+    let url = format!("{}/libraries/{library}/{version}", cdnjs_api_base());
     let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
     if !resp.status().is_success() {
         anyhow::bail!("cdnjs version not found: {library}@{version}");
@@ -135,7 +141,7 @@ pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<
         &format!("registry/org/{scope}"),
         META_CACHE_TTL_SECS,
         async move {
-            let url = format!("{CDN_NPM_REGISTRY}/-/org/{scope}/package");
+            let url = format!("{}/-/org/{scope}/package", npm_registry());
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Organization not found: @{scope}");

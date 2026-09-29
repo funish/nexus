@@ -10,6 +10,12 @@ services:
       WINGET_GITHUB_REPO: ${WINGET_GITHUB_REPO:-microsoft/winget-pkgs}
       WINGET_GITHUB_BRANCH: ${WINGET_GITHUB_BRANCH:-master}
 
+      # CDN upstream registry URLs (defaults shown; point at private mirrors if needed)
+      NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-https://registry.npmjs.org}
+      JSR_REGISTRY_URL: ${JSR_REGISTRY_URL:-https://npm.jsr.io}
+      GITHUB_API_BASE_URL: ${GITHUB_API_BASE_URL:-https://api.github.com}
+      CDNJS_API_BASE_URL: ${CDNJS_API_BASE_URL:-https://api.cdnjs.com}
+
       # GitHub Token for WinGet manifest access (optional, increases API rate limit)
       GITHUB_TOKEN: ${GITHUB_TOKEN}
 

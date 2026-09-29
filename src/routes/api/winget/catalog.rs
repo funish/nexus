@@ -27,7 +27,7 @@ pub struct ManifestSearchParams {
     pub query: Option<String>,
     #[serde(rename = "matchType")]
     pub match_type: Option<MatchType>,
-    #[serde(rename = "maximumResults")]
+    #[serde(rename = "maximumResults", alias = "limit")]
     pub maximum_results: Option<usize>,
 }
 
@@ -65,8 +65,8 @@ pub async fn handle_manifest_search_post(
         .and_then(|q| q.match_type)
         .unwrap_or_default();
     let token = header_continuation_token(&headers);
-    // The WinGet client sends `PackageMatchFilters` for most searches (rather than the
-    // legacy `Inclusions`); treat them as the inclusion set (AND match semantics).
+    // `PackageMatchFilters` is accepted as the client compatibility spelling; it uses
+    // the same OR semantics as `Inclusions`.
     let inclusions = req.package_match_filters.or(req.inclusions);
     run_and_build(
         &db,
@@ -110,10 +110,6 @@ async fn run_and_build(
         inclusions.as_deref(),
         filters.as_deref(),
     );
-
-    if results.is_empty() {
-        return StatusCode::NO_CONTENT.into_response();
-    }
 
     let continuation_token = if has_more {
         Some(encode_continuation_token(offset + results.len()))
@@ -197,7 +193,7 @@ pub async fn handle_packages(
 pub async fn handle_information() -> Response {
     let body = InformationResponse {
         data: InformationData {
-            source_identifier: "Funish.Nexus".to_string(),
+            source_identifier: crate::config::winget_source_identifier().to_string(),
             server_supported_versions: vec!["1.4.0".to_string(), "1.9.0".to_string()],
             required_package_match_fields: vec!["PackageIdentifier".to_string()],
             unsupported_package_match_fields: vec![

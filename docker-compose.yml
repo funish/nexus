@@ -4,6 +4,12 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      # WinGet client-visible source identifier and upstream locations
+      WINGET_SOURCE_IDENTIFIER: ${WINGET_SOURCE_IDENTIFIER:-Funish.Nexus}
+      WINGET_SOURCE_MSIX_URL: ${WINGET_SOURCE_MSIX_URL:-https://cdn.winget.microsoft.com/cache/source.msix}
+      WINGET_GITHUB_REPO: ${WINGET_GITHUB_REPO:-microsoft/winget-pkgs}
+      WINGET_GITHUB_BRANCH: ${WINGET_GITHUB_BRANCH:-master}
+
       # GitHub Token for WinGet manifest access (optional, increases API rate limit)
       GITHUB_TOKEN: ${GITHUB_TOKEN}
 

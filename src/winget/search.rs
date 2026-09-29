@@ -64,14 +64,32 @@ pub struct SearchResult {
 
 /// Case-folded match of value against keyword by matchType (used for inclusions/filters).
 fn match_string(value: &str, keyword: &str, match_type: MatchType) -> bool {
-    let lv = value.to_lowercase();
-    let lk = keyword.to_lowercase();
     match match_type {
-        MatchType::Exact => lv == lk,
-        MatchType::StartsWith => lv.starts_with(&lk),
-        // CaseInsensitive / Substring / Wildcard / Fuzzy / FuzzySubstring -> substring contains
-        _ => lv.contains(&lk),
+        MatchType::Exact => value == keyword,
+        MatchType::CaseInsensitive => value.to_lowercase() == keyword.to_lowercase(),
+        MatchType::StartsWith => value.to_lowercase().starts_with(&keyword.to_lowercase()),
+        MatchType::Substring => {
+            let lv = value.to_lowercase();
+            let lk = keyword.to_lowercase();
+            lv.contains(&lk)
+        }
+        // Keep the legacy wildcard/fuzzy fallbacks usable for advanced requests;
+        // the reference REST source does not expose these operators.
+        MatchType::Wildcard | MatchType::Fuzzy | MatchType::FuzzySubstring => {
+            let lv = value.to_lowercase();
+            let lk = keyword.to_lowercase();
+            lv.contains(&lk)
+        }
     }
+}
+
+/// Normalize the loosely spelled name used by NormalizedPackageNameAndPublisher.
+fn normalized_name(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '+'))
+        .collect()
 }
 
 /// Map a PackageMatchField to an entry field name.
@@ -129,113 +147,129 @@ fn matches_field(
     }
 }
 
-/// Apply inclusions (AND): the entry must match every inclusion.
-fn matches_inclusions(entry: &WinGetSearchEntry, inclusions: &[PackageMatchFilter]) -> bool {
-    inclusions.iter().all(|inc| {
-        let Some(kw) = inc.request_match.key_word.as_deref() else {
-            return true;
-        };
-        if kw.is_empty() {
-            return true;
-        }
-        let mt = inc.request_match.match_type.unwrap_or_default();
-        if inc.package_match_field == PackageMatchField::NormalizedPackageNameAndPublisher {
-            return match_string(&entry.name, kw, mt) || match_string(&entry.publisher, kw, mt);
-        }
-        match field_to_key(inc.package_match_field) {
-            Some(key) => matches_field(entry, key, kw, mt),
-            None => true,
-        }
-    })
-}
-
-/// Apply filters (NOT): the entry must not match any filter.
-fn matches_filters(entry: &WinGetSearchEntry, filters: &[PackageMatchFilter]) -> bool {
-    !filters.iter().any(|f| {
-        let Some(kw) = f.request_match.key_word.as_deref() else {
-            return false;
-        };
-        if kw.is_empty() {
-            return false;
-        }
-        let mt = f.request_match.match_type.unwrap_or_default();
-        if f.package_match_field == PackageMatchField::NormalizedPackageNameAndPublisher {
-            return match_string(&entry.name, kw, mt) || match_string(&entry.publisher, kw, mt);
-        }
-        match field_to_key(f.package_match_field) {
-            Some(key) => matches_field(entry, key, kw, mt),
-            None => false,
-        }
-    })
-}
-
-/// Flatten to a searchable string list (field order drives scoring — mirrors scoreEntryKeyword).
-fn entry_searchable_strings(entry: &WinGetSearchEntry) -> Vec<&str> {
-    let mut v: Vec<&str> = Vec::with_capacity(
-        3 + entry.monikers.len()
-            + entry.tags.len()
-            + entry.commands.len()
-            + entry.package_family_names.len()
-            + entry.product_codes.len()
-            + entry.upgrade_codes.len(),
-    );
-    v.push(entry.id.as_str());
-    v.push(entry.name.as_str());
-    v.push(entry.publisher.as_str());
-    v.extend(entry.monikers.iter().map(String::as_str));
-    v.extend(entry.tags.iter().map(String::as_str));
-    v.extend(entry.commands.iter().map(String::as_str));
-    v.extend(entry.package_family_names.iter().map(String::as_str));
-    v.extend(entry.product_codes.iter().map(String::as_str));
-    v.extend(entry.upgrade_codes.iter().map(String::as_str));
-    v
-}
-
-/// Linear scoring for non-Fuzzy match types (mirrors search.ts scoreEntryKeyword).
-fn score_entry_keyword(entry: &WinGetSearchEntry, keyword: &str, match_type: MatchType) -> f64 {
-    let kw = keyword.to_lowercase();
-    let fields = entry_searchable_strings(entry);
-    let mut best = 0.0_f64;
-    for (i, f) in fields.iter().enumerate() {
-        let fl = f.to_lowercase();
-        let fl_len = fl.len().max(1) as f64;
-        let (matched, score) = match match_type {
-            MatchType::Exact => {
-                let m = fl == kw;
-                (m, if m { 1000.0 - i as f64 } else { 0.0 })
-            }
-            MatchType::StartsWith => {
-                let m = fl.starts_with(&kw);
-                (
-                    m,
-                    if m {
-                        1000.0 - i as f64 + (kw.len() as f64 / fl_len) * 100.0
-                    } else {
-                        0.0
-                    },
-                )
-            }
-            // CaseInsensitive / Substring / Wildcard / FuzzySubstring / Fuzzy(fallback)
-            _ => {
-                let m = fl.contains(&kw);
-                (
-                    m,
-                    if m {
-                        1000.0 - i as f64 + (kw.len() as f64 / fl_len) * 100.0
-                    } else {
-                        0.0
-                    },
-                )
-            }
-        };
-        if score > best {
-            best = score;
-        }
-        if matched && matches!(match_type, MatchType::Exact | MatchType::CaseInsensitive) {
-            return best;
-        }
+/// Whether one inclusion or filter matches its declared field.
+fn filter_matches(entry: &WinGetSearchEntry, filter: &PackageMatchFilter) -> bool {
+    let Some(kw) = filter.request_match.key_word.as_deref() else {
+        return true;
+    };
+    if kw.is_empty() {
+        return true;
     }
-    best
+    let mt = filter.request_match.match_type.unwrap_or_default();
+
+    if filter.package_match_field == PackageMatchField::NormalizedPackageNameAndPublisher {
+        return match_string(&normalized_name(&entry.name), &normalized_name(kw), mt);
+    }
+
+    // Fields reported as unsupported are ignored, matching the reference store's
+    // behavior of omitting unsupported predicates rather than rejecting matches.
+    field_to_key(filter.package_match_field).is_none_or(|key| matches_field(entry, key, kw, mt))
+}
+
+/// Apply inclusions (OR): one matching inclusion is sufficient.
+fn matches_inclusions(entry: &WinGetSearchEntry, inclusions: &[PackageMatchFilter]) -> bool {
+    inclusions.is_empty() || inclusions.iter().any(|inc| filter_matches(entry, inc))
+}
+
+/// Apply filters (AND): every specified filter must match.
+fn matches_filters(entry: &WinGetSearchEntry, filters: &[PackageMatchFilter]) -> bool {
+    filters.iter().all(|filter| filter_matches(entry, filter))
+}
+
+/// Score one value by how strongly it matches the keyword.
+fn match_specificity(value: &str, keyword: &str, match_type: MatchType) -> Option<u64> {
+    let matched = match match_type {
+        MatchType::Exact => value == keyword,
+        MatchType::CaseInsensitive => value.to_lowercase() == keyword.to_lowercase(),
+        MatchType::StartsWith => value.to_lowercase().starts_with(&keyword.to_lowercase()),
+        MatchType::Substring => {
+            let lv = value.to_lowercase();
+            let lk = keyword.to_lowercase();
+            lv.contains(&lk)
+        }
+        MatchType::Wildcard | MatchType::Fuzzy | MatchType::FuzzySubstring => {
+            let lv = value.to_lowercase();
+            let lk = keyword.to_lowercase();
+            lv.contains(&lk)
+        }
+    };
+    if !matched {
+        return None;
+    }
+
+    let lv = value.to_lowercase();
+    let lk = keyword.to_lowercase();
+    if lv == lk {
+        return Some(5_000);
+    }
+    if lv.starts_with(&lk) {
+        return Some(3_000);
+    }
+
+    let token_equal = value
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| token.to_lowercase() == lk);
+    if token_equal {
+        return Some(2_000);
+    }
+    let token_starts = value
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| token.to_lowercase().starts_with(&lk));
+    Some(if token_starts { 1_000 } else { 0 })
+}
+
+fn score_identity_group(value: &str, keyword: &str, match_type: MatchType, base: u64) -> u64 {
+    match_specificity(value, keyword, match_type).map_or(0, |mut specificity| {
+        let parts = value.split(|c: char| !c.is_alphanumeric()).count();
+        specificity += 500 - parts.saturating_sub(1).min(5) as u64 * 100;
+        base + specificity
+    })
+}
+
+fn score_field_group(value: &str, keyword: &str, match_type: MatchType, base: u64) -> u64 {
+    match_specificity(value, keyword, match_type).map_or(0, |specificity| base + specificity)
+}
+
+fn score_field_group_any(
+    values: &[String],
+    keyword: &str,
+    match_type: MatchType,
+    base: u64,
+) -> u64 {
+    values
+        .iter()
+        .map(|value| score_field_group(value, keyword, match_type, base))
+        .max()
+        .unwrap_or_default()
+}
+
+/// Rank identity, name, publisher, then the best auxiliary field. Tuples prevent
+/// auxiliary metadata from overriding a stronger PackageIdentifier/PackageName.
+type KeywordScore = (u64, u64, u64, u64);
+
+fn score_entry_keyword(
+    entry: &WinGetSearchEntry,
+    keyword: &str,
+    match_type: MatchType,
+) -> KeywordScore {
+    let auxiliary = [
+        score_field_group_any(&entry.monikers, keyword, match_type, 50_000),
+        score_field_group_any(&entry.tags, keyword, match_type, 10_000),
+        score_field_group_any(&entry.commands, keyword, match_type, 5_000),
+        score_field_group_any(&entry.package_family_names, keyword, match_type, 1_000),
+        score_field_group_any(&entry.product_codes, keyword, match_type, 500),
+        score_field_group_any(&entry.upgrade_codes, keyword, match_type, 100),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or_default();
+
+    (
+        score_identity_group(&entry.id, keyword, match_type, 1_000_000),
+        score_field_group(&entry.name, keyword, match_type, 500_000),
+        score_field_group(&entry.publisher, keyword, match_type, 100_000),
+        auxiliary,
+    )
 }
 
 /// Weighted FuzzySearch score, replicating @nlptools/distance FuzzySearch.
@@ -273,52 +307,56 @@ pub fn search_packages(
 
     let has_keyword = keyword.is_some_and(|k| !k.is_empty());
 
-    let mut candidates: Vec<&WinGetSearchEntry> = if !has_keyword
-        && inclusions.is_empty()
-        && filters.is_empty()
-    {
-        index.iter().collect()
-    } else {
-        let mut cands: Vec<&WinGetSearchEntry> = if has_keyword {
-            let kw = keyword.unwrap();
-            let is_fuzzy = matches!(match_type, MatchType::Fuzzy | MatchType::FuzzySubstring);
-            if is_fuzzy {
-                let threshold = if matches!(match_type, MatchType::Fuzzy) {
-                    0.15
-                } else {
-                    0.10
-                };
-                let ql = kw.to_lowercase();
-                let mut scored: Vec<(f64, &WinGetSearchEntry)> = index
-                    .iter()
-                    .map(|e| (fuzzy_score(e, &ql), e))
-                    .filter(|(s, _)| *s >= threshold)
-                    .collect();
-                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                scored.into_iter().map(|(_, e)| e).collect()
-            } else {
-                let mut scored: Vec<(f64, &WinGetSearchEntry)> = index
-                    .iter()
-                    .filter_map(|e| {
-                        let s = score_entry_keyword(e, kw, match_type);
-                        if s > 0.0 { Some((s, e)) } else { None }
-                    })
-                    .collect();
-                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                scored.into_iter().map(|(_, e)| e).collect()
-            }
-        } else {
+    let mut candidates: Vec<&WinGetSearchEntry> =
+        if !has_keyword && inclusions.is_empty() && filters.is_empty() {
             index.iter().collect()
-        };
+        } else {
+            let mut cands: Vec<&WinGetSearchEntry> = if has_keyword {
+                let kw = keyword.unwrap();
+                let is_fuzzy = matches!(match_type, MatchType::Fuzzy | MatchType::FuzzySubstring);
+                if is_fuzzy {
+                    let threshold = if matches!(match_type, MatchType::Fuzzy) {
+                        0.15
+                    } else {
+                        0.10
+                    };
+                    let ql = kw.to_lowercase();
+                    let mut scored: Vec<(f64, &WinGetSearchEntry)> = index
+                        .iter()
+                        .map(|e| (fuzzy_score(e, &ql), e))
+                        .filter(|(s, _)| *s >= threshold)
+                        .collect();
+                    scored.sort_by(|a, b| {
+                        b.0.partial_cmp(&a.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| a.1.id.cmp(&b.1.id))
+                    });
+                    scored.into_iter().map(|(_, e)| e).collect()
+                } else {
+                    let mut scored: Vec<(KeywordScore, &WinGetSearchEntry)> = index
+                        .iter()
+                        .filter_map(|e| {
+                            let s = score_entry_keyword(e, kw, match_type);
+                            (s != (0, 0, 0, 0)).then_some((s, e))
+                        })
+                        .collect();
+                    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+                    scored.into_iter().map(|(_, e)| e).collect()
+                }
+            } else {
+                let mut cands = index.iter().collect::<Vec<_>>();
+                cands.sort_by(|a, b| a.id.cmp(&b.id));
+                cands
+            };
 
-        if !inclusions.is_empty() {
-            cands.retain(|e| matches_inclusions(e, inclusions));
-        }
-        if !filters.is_empty() {
-            cands.retain(|e| matches_filters(e, filters));
-        }
-        cands
-    };
+            if !inclusions.is_empty() {
+                cands.retain(|e| matches_inclusions(e, inclusions));
+            }
+            if !filters.is_empty() {
+                cands.retain(|e| matches_filters(e, filters));
+            }
+            cands
+        };
 
     let total = candidates.len();
     let results: Vec<ManifestSearchResult> = match maximum_results {
@@ -401,12 +439,12 @@ mod tests {
     }
 
     #[test]
-    fn substring_case_insensitive() {
+    fn substring_matches_case_insensitively() {
         let idx = sample_index();
         let res = search_packages(
             &idx,
             Some("visual"),
-            MatchType::CaseInsensitive,
+            MatchType::Substring,
             None,
             None,
             None,
@@ -416,17 +454,191 @@ mod tests {
     }
 
     #[test]
-    fn pagination_has_more() {
+    fn case_insensitive_requires_the_whole_field() {
         let idx = sample_index();
+        assert!(
+            search_packages(
+                &idx,
+                Some("Visual"),
+                MatchType::CaseInsensitive,
+                None,
+                None,
+                None,
+                None
+            )
+            .results
+            .is_empty()
+        );
         let res = search_packages(
             &idx,
-            None,
+            Some("visual studio code"),
             MatchType::CaseInsensitive,
-            Some(1),
+            None,
             None,
             None,
             None,
         );
+        assert_eq!(res.results.len(), 1);
+    }
+
+    fn match_filter(
+        field: crate::winget::rest::PackageMatchField,
+        keyword: &str,
+        match_type: MatchType,
+    ) -> crate::winget::rest::PackageMatchFilter {
+        crate::winget::rest::PackageMatchFilter {
+            package_match_field: field,
+            request_match: crate::winget::rest::SearchRequestMatch {
+                key_word: Some(keyword.to_string()),
+                match_type: Some(match_type),
+                package_match_field: None,
+            },
+        }
+    }
+
+    #[test]
+    fn inclusions_are_or_filters_are_and() {
+        let idx = sample_index();
+        let inclusions = [
+            match_filter(
+                crate::winget::rest::PackageMatchField::PackageIdentifier,
+                "Git.Git",
+                MatchType::Exact,
+            ),
+            match_filter(
+                crate::winget::rest::PackageMatchField::PackageName,
+                "Visual Studio Code",
+                MatchType::Exact,
+            ),
+        ];
+        let res = search_packages(
+            &idx,
+            None,
+            MatchType::Substring,
+            None,
+            None,
+            Some(&inclusions),
+            None,
+        );
+        assert_eq!(res.results.len(), 2);
+
+        let filters = [
+            match_filter(
+                crate::winget::rest::PackageMatchField::Publisher,
+                "Microsoft",
+                MatchType::Exact,
+            ),
+            match_filter(
+                crate::winget::rest::PackageMatchField::Moniker,
+                "vscode",
+                MatchType::Exact,
+            ),
+        ];
+        let res = search_packages(
+            &idx,
+            None,
+            MatchType::Substring,
+            None,
+            None,
+            None,
+            Some(&filters),
+        );
+        assert_eq!(res.results.len(), 1);
+        assert_eq!(
+            res.results[0].package_identifier,
+            "Microsoft.VisualStudioCode"
+        );
+    }
+
+    #[test]
+    fn starts_with_ignores_case() {
+        let idx = sample_index();
+        let res = search_packages(
+            &idx,
+            Some("VIS"),
+            MatchType::StartsWith,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(res.results.len(), 1);
+        assert_eq!(
+            res.results[0].package_identifier,
+            "Microsoft.VisualStudioCode"
+        );
+    }
+
+    #[test]
+    fn shorter_identifiers_rank_above_longer_variants() {
+        let idx = vec![
+            WinGetSearchEntry {
+                id: "Google.Chrome.Canary".to_string(),
+                name: "Google Chrome Canary".to_string(),
+                publisher: "Google LLC".to_string(),
+                monikers: vec![],
+                tags: vec![],
+                commands: vec![],
+                versions: Vec::new(),
+                package_family_names: vec![],
+                product_codes: vec![],
+                upgrade_codes: vec![],
+            },
+            WinGetSearchEntry {
+                id: "Google.Chrome".to_string(),
+                name: "Google Chrome".to_string(),
+                publisher: "Google LLC".to_string(),
+                monikers: vec![],
+                tags: vec![],
+                commands: vec![],
+                versions: Vec::new(),
+                package_family_names: vec![],
+                product_codes: vec![],
+                upgrade_codes: vec![],
+            },
+        ];
+        let res = search_packages(
+            &idx,
+            Some("chrome"),
+            MatchType::Substring,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(res.results[0].package_identifier, "Google.Chrome");
+    }
+    #[test]
+    fn primary_fields_rank_above_commands() {
+        let mut idx = sample_index();
+        idx.push(WinGetSearchEntry {
+            id: "Other.Tool".to_string(),
+            name: "Other Tool".to_string(),
+            publisher: "Other".to_string(),
+            monikers: vec![],
+            tags: vec![],
+            commands: vec!["git".to_string()],
+            versions: Vec::new(),
+            package_family_names: vec![],
+            product_codes: vec![],
+            upgrade_codes: vec![],
+        });
+        let res = search_packages(
+            &idx,
+            Some("git"),
+            MatchType::Substring,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(res.results[0].package_identifier, "Git.Git");
+    }
+
+    #[test]
+    fn pagination_has_more() {
+        let idx = sample_index();
+        let res = search_packages(&idx, None, MatchType::Substring, Some(1), None, None, None);
         assert_eq!(res.results.len(), 1);
         assert!(res.has_more);
     }
@@ -447,7 +659,7 @@ mod tests {
         let second = search_packages(
             &idx,
             None,
-            MatchType::CaseInsensitive,
+            MatchType::Substring,
             Some(1),
             Some(&token),
             None,

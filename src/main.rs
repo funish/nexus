@@ -24,6 +24,7 @@ async fn main() {
         .init();
 
     let config = config::Config::from_env();
+    config::set_winget_runtime(&config);
     let storage = storage::create_storage(&config).await;
     let winget_db = winget::db::create_shared_db();
 

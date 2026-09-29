@@ -21,9 +21,14 @@ pub fn build_search_index(conn: &Connection) -> anyhow::Result<Vec<WinGetSearchE
     let sql = r#"
     WITH
     id_names AS (
-      SELECT k, GROUP_CONCAT(name, ?1) AS v FROM (
-        SELECT DISTINCT id AS k, name FROM manifest
-      ) GROUP BY k
+      SELECT m.id AS k, n.name AS v
+      FROM manifest m
+      JOIN names n ON n.rowid = m.name
+      JOIN (
+        SELECT id, MAX(rowid) AS manifest_rowid
+        FROM manifest
+        GROUP BY id
+      ) latest ON latest.id = m.id AND latest.manifest_rowid = m.rowid
     ),
     id_publishers AS (
       SELECT k, GROUP_CONCAT(norm_publisher, ?1) AS v FROM (
@@ -299,6 +304,21 @@ mod tests {
         );
         assert!(!index.is_empty(), "search index should not be empty");
         eprintln!("search index entries: {}", index.len());
+
+        for id in ["Git.Git", "Google.Chrome"] {
+            let entry = index.iter().find(|entry| entry.id == id);
+            assert!(
+                entry.is_some_and(|entry| !entry.name.chars().all(|c| c.is_ascii_digit())),
+                "{id} PackageName should be human-readable, got {entry:?}"
+            );
+        }
+        assert_eq!(
+            index
+                .iter()
+                .find(|entry| entry.id == "Git.Git")
+                .map(|entry| entry.name.as_str()),
+            Some("Git")
+        );
 
         assert!(
             package_exists(&conn, "Git.Git").expect("package_exists"),

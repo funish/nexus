@@ -1,23 +1,31 @@
-//! WinGet GitHub manifest source constants (mirrors winget/constants.ts).
-
-/// GitHub repository hosting the WinGet community manifests.
-pub const WINGET_GITHUB_REPO: &str = "microsoft/winget-pkgs";
-
-/// Default branch.
-pub const WINGET_GITHUB_BRANCH: &str = "master";
+//! WinGet manifest source settings. The upstream database and GitHub repository are
+//! configurable so private forks or mirrors can be served without code changes.
 
 /// GitHub REST API base URL.
 pub const WINGET_GITHUB_API_BASE: &str = "https://api.github.com";
 
-/// GitHub raw content base URL for the manifests branch.
-pub const WINGET_GITHUB_RAW_BASE: &str =
-    "https://raw.githubusercontent.com/microsoft/winget-pkgs/master";
+/// GitHub raw content base URL for the configured repository and branch.
+pub fn github_raw_base() -> String {
+    format!(
+        "https://raw.githubusercontent.com/{}/{}",
+        crate::config::winget_github_repo(),
+        crate::config::winget_github_branch()
+    )
+}
 
-/// Cache key prefix for WinGet GitHub data.
-pub const WINGET_CACHE_PREFIX: &str = "registry/winget/microsoft/winget-pkgs";
+/// Cache key prefix for the configured WinGet GitHub data.
+pub fn cache_prefix() -> String {
+    format!(
+        "registry/winget/{}/{}",
+        crate::config::winget_github_repo(),
+        crate::config::winget_github_branch()
+    )
+}
 
 /// Cache key for the manifests directory SHA.
-pub const WINGET_MANIFESTS_SHA_KEY: &str = "registry/winget/microsoft/winget-pkgs/manifests-sha";
+pub fn manifests_sha_key() -> String {
+    format!("{}/manifests-sha", cache_prefix())
+}
 
 /// Tree/SHA cache TTL in seconds (10 minutes).
 pub const WINGET_UPDATE_INTERVAL_SECS: i64 = 600;

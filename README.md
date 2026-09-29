@@ -125,7 +125,7 @@ Conditional requests are honored: send `If-None-Match: <integrity>` to get a `30
 
 ### WinGet API
 
-A complete Windows Package Manager REST API, compatible with the [WinGet RESTSource 1.9.0](https://github.com/microsoft/winget-cli-restsource/blob/main/documentation/WinGet-1.9.0.yaml) specification. Package search is backed by the SQLite `index.db`; per-version manifests are assembled from the `microsoft/winget-pkgs` GitHub YAML files.
+Implements the [WinGet RESTSource 1.9.0](https://github.com/microsoft/winget-cli-restsource/blob/main/documentation/WinGet-1.9.0.yaml) JSON contract. Package search is backed by the SQLite `index.db` from the configured `source.msix`; per-version manifests are assembled from the configured GitHub repository. The defaults use the official community data, while `SourceIdentifier` and both upstream locations can be pointed at a private mirror or fork with the same layout.
 
 ```bash
 # Server information
@@ -136,7 +136,9 @@ GET https://nexus.funish.net/api/winget/packages
 
 # Search packages (GET or POST)
 GET  https://nexus.funish.net/api/winget/manifestSearch?query=vscode&matchType=Fuzzy&maximumResults=5
-POST https://nexus.funish.net/api/winget/manifestSearch        # body: {"Query":{"KeyWord":"chrome","MatchType":"Fuzzy"}}
+POST https://nexus.funish.net/api/winget/manifestSearch        # body: {"Query":{"KeyWord":"chrome","MatchType":"Substring"}}
+
+`maximumResults` is the RESTSource parameter; the GET compatibility endpoint also accepts `limit` as an alias. Empty searches return HTTP 200 with `{"Data":[]}`.
 
 # Package metadata & versions
 GET https://nexus.funish.net/api/winget/packages/{id}
@@ -214,6 +216,10 @@ All configuration is via environment variables (see [`.env.example`](./.env.exam
 |---|---|---|
 | `PORT` | `3000` | HTTP listen port |
 | `CACHE_DIR` | `./.cache` | Filesystem cache directory (used when S3 is not configured) |
+| `WINGET_SOURCE_IDENTIFIER` | `Funish.Nexus` | Client-visible WinGet `SourceIdentifier` (3-128 characters) |
+| `WINGET_SOURCE_MSIX_URL` | official CDN URL | `source.msix` containing `Public/index.db` for the package catalog |
+| `WINGET_GITHUB_REPO` | `microsoft/winget-pkgs` | GitHub repository containing the matching manifests tree |
+| `WINGET_GITHUB_BRANCH` | `master` | Branch of `WINGET_GITHUB_REPO` used for manifest YAML files |
 | `GITHUB_TOKEN` | — | Optional; raises GitHub API rate limits for WinGet manifest/tree fetching |
 | `S3_ACCESS_KEY_ID` | — | S3 access key (enables S3 storage when all S3_* are set) |
 | `S3_SECRET_ACCESS_KEY` | — | S3 secret key |

@@ -13,12 +13,23 @@ use super::queries::build_search_index;
 use super::search::WinGetSearchEntry;
 use crate::storage::{CacheMeta, SharedStorage};
 
-const WINGET_SOURCE_MSIX_URL: &str = "https://cdn.winget.microsoft.com/cache/source.msix";
-const WINGET_INDEX_DB_KEY: &str = "winget/index.db";
 const WINGET_SEARCH_INDEX_KEY: &str = "winget/index.json";
 const WINGET_DB_UPDATE_INTERVAL_SECS: u64 = 900;
-const WINGET_DB_LOAD_KEY: &str = "winget/index-db/load";
-const WINGET_DB_REFRESH_KEY: &str = "winget/index-db/refresh";
+
+/// Bind cached database bytes and refresh single-flight to the exact upstream, so
+/// different configured sources never reuse each other's metadata.
+fn index_db_key() -> String {
+    let source_hash = sha256_hex(crate::config::winget_source_msix_url().as_bytes());
+    format!("winget/index-db/{source_hash}/index.db")
+}
+
+fn index_db_load_key() -> String {
+    format!("{}/load", index_db_key())
+}
+
+fn index_db_refresh_key() -> String {
+    format!("{}/refresh", index_db_key())
+}
 
 pub type SharedDb = Arc<Mutex<Option<CachedDb>>>;
 
@@ -220,11 +231,11 @@ async fn load_index_db_from_storage(
     db: &SharedDb,
     storage: &SharedStorage,
 ) -> Result<Option<Database>> {
-    let Some(data) = storage.get_raw(WINGET_INDEX_DB_KEY).await else {
+    let Some(data) = storage.get_raw(index_db_key().as_str()).await else {
         return Ok(None);
     };
     let meta = storage
-        .get_meta(WINGET_INDEX_DB_KEY)
+        .get_meta(index_db_key().as_str())
         .await
         .unwrap_or_default();
     let etag = meta_string(&meta, "etag");
@@ -248,7 +259,7 @@ async fn load_index_db_from_storage(
                 .extra
                 .insert("etag".to_string(), Value::String(etag.clone()));
         }
-        storage.set_meta(WINGET_INDEX_DB_KEY, &next_meta).await;
+        storage.set_meta(index_db_key().as_str(), &next_meta).await;
         hashed
     };
 
@@ -276,7 +287,7 @@ async fn load_cached_db(db: &SharedDb, storage: &SharedStorage) -> Option<Databa
 
     let state = db.clone();
     let storage = storage.clone();
-    crate::utils::singleflight::run_once(WINGET_DB_LOAD_KEY, move || async move {
+    crate::utils::singleflight::run_once(&index_db_load_key(), move || async move {
         if fresh_cached(&state).is_some() {
             return;
         }
@@ -291,7 +302,7 @@ async fn load_cached_db(db: &SharedDb, storage: &SharedStorage) -> Option<Databa
 
 async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Result<RefreshOutcome> {
     let old_meta = storage
-        .get_meta(WINGET_INDEX_DB_KEY)
+        .get_meta(index_db_key().as_str())
         .await
         .unwrap_or_default();
     let etag = meta_string(&old_meta, "etag");
@@ -303,7 +314,7 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
     }
 
     let resp = crate::utils::http::get_with_retry(
-        WINGET_SOURCE_MSIX_URL,
+        crate::config::winget_source_msix_url(),
         Duration::from_secs(120),
         None,
         &headers,
@@ -312,7 +323,7 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let meta = checked_meta(old_meta, etag.as_deref(), None);
-        storage.set_meta(WINGET_INDEX_DB_KEY, &meta).await;
+        storage.set_meta(index_db_key().as_str(), &meta).await;
         if let Some(mut cached) = current_cached(db) {
             cached.checked_at = now_secs()?;
             store_cached(db, cached);
@@ -355,14 +366,14 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
         build_and_persist_index(&database, storage, &db_hash).await?
     };
 
-    storage.set_raw(WINGET_INDEX_DB_KEY, &data).await;
+    storage.set_raw(index_db_key().as_str(), &data).await;
     let mut meta = CacheMeta::default();
     if let Some(source_version) = source_version {
         meta.extra
             .insert("source_version".to_string(), Value::String(source_version));
     }
     let meta = checked_meta(meta, etag.as_deref(), Some(&db_hash));
-    storage.set_meta(WINGET_INDEX_DB_KEY, &meta).await;
+    storage.set_meta(index_db_key().as_str(), &meta).await;
 
     let cached = CachedDb {
         database: database.clone(),
@@ -391,7 +402,7 @@ fn spawn_refresh_if_stale(db: &SharedDb, storage: &SharedStorage) {
 async fn refresh_index_db(db: &SharedDb, storage: &SharedStorage) -> Result<Database> {
     let state = db.clone();
     let refresh_storage = storage.clone();
-    crate::utils::singleflight::run_once(WINGET_DB_REFRESH_KEY, move || async move {
+    crate::utils::singleflight::run_once(&index_db_refresh_key(), move || async move {
         if fresh_cached(&state).is_some() {
             return;
         }

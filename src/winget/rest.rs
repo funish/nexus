@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Default)]
 pub enum MatchType {
     Exact,
-    #[default]
     CaseInsensitive,
     StartsWith,
+    #[default]
     Substring,
     Wildcard,
     Fuzzy,

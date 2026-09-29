@@ -65,7 +65,10 @@ pub async fn fetch_manifest_content(
     storage: &SharedStorage,
     manifest_path: &str,
 ) -> Result<String> {
-    let cache_key = format!("{WINGET_CACHE_PREFIX}/files/{manifest_path}");
+    let cache_key = format!(
+        "{}/files/{manifest_path}",
+        crate::winget::constants::cache_prefix()
+    );
 
     if let Some(cached) = storage.get_raw(&cache_key).await
         && let Ok(s) = String::from_utf8(cached)
@@ -91,7 +94,7 @@ pub async fn fetch_manifest_content(
         // bounds the concurrent fetches launched by build_version_manifest's join_all.
         let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
 
-        let url = format!("{WINGET_GITHUB_RAW_BASE}/{path_c}");
+        let url = format!("{}/{path_c}", crate::winget::constants::github_raw_base());
         if let Ok(resp) = crate::utils::http::get_with_retry(
             &url,
             Duration::from_secs(30),
@@ -161,7 +164,10 @@ pub async fn build_version_manifest(
     package_id: &str,
     version: &str,
 ) -> Result<Option<VersionManifest>> {
-    let cache_key = format!("{WINGET_CACHE_PREFIX}/version-manifest/{package_id}/{version}");
+    let cache_key = format!(
+        "{}/version-manifest/{package_id}/{version}",
+        crate::winget::constants::cache_prefix()
+    );
     if cache_fresh(storage, &cache_key, WINGET_UPDATE_INTERVAL_SECS).await
         && let Some(bytes) = storage.get_raw(&cache_key).await
         && let Ok(entry) = serde_json::from_slice::<VersionManifest>(&bytes)
@@ -221,7 +227,10 @@ async fn rebuild_version_manifest(
     package_id: &str,
     version: &str,
 ) -> Result<Option<VersionManifest>> {
-    let cache_key = format!("{WINGET_CACHE_PREFIX}/version-manifest/{package_id}/{version}");
+    let cache_key = format!(
+        "{}/version-manifest/{package_id}/{version}",
+        crate::winget::constants::cache_prefix()
+    );
     let files = get_version_manifests(storage, package_id, version).await?;
     if files.is_empty() {
         return Ok(None);

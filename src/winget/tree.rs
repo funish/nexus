@@ -44,7 +44,8 @@ struct TreeResponse {
 async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse> {
     let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
     let url = format!(
-        "{WINGET_GITHUB_API_BASE}/repos/{WINGET_GITHUB_REPO}/git/trees/{tree_sha}{}",
+        "{WINGET_GITHUB_API_BASE}/repos/{}/git/trees/{tree_sha}{}",
+        crate::config::winget_github_repo(),
         if recursive { "?recursive=1" } else { "" }
     );
     let resp = crate::utils::http::get_with_retry(
@@ -127,7 +128,7 @@ pub async fn get_github_tree_paths(
     cache_suffix: &str,
 ) -> Result<Vec<String>> {
     let normalized = cache_suffix.replace('/', "-");
-    let cache_key = format!("{WINGET_CACHE_PREFIX}/{normalized}");
+    let cache_key = format!("{}/{normalized}", crate::winget::constants::cache_prefix());
     let tree_sha = tree_sha.to_string();
     cached_singleflight(storage, &cache_key, async move {
         let tree = get_github_tree(&tree_sha, true).await?;
@@ -138,7 +139,10 @@ pub async fn get_github_tree_paths(
 
 /// Cached letter-directory SHAs (a-z, 0-9) under manifests/ (mirrors getLetterDirectoryShas).
 pub async fn get_letter_directory_shas(storage: &SharedStorage) -> Result<HashMap<String, String>> {
-    let cache_key = format!("{WINGET_CACHE_PREFIX}/letter-shas.json");
+    let cache_key = format!(
+        "{}/letter-shas.json",
+        crate::winget::constants::cache_prefix()
+    );
     let fetch_storage = storage.clone();
     cached_singleflight(storage, &cache_key, async move {
         let manifests_sha = fetch_manifests_sha(&fetch_storage).await?;
@@ -162,15 +166,19 @@ pub async fn get_letter_directory_shas(storage: &SharedStorage) -> Result<HashMa
 
 /// Cached SHA of the manifests/ directory (mirrors fetchManifestsSha).
 pub async fn fetch_manifests_sha(storage: &SharedStorage) -> Result<String> {
-    cached_singleflight(storage, WINGET_MANIFESTS_SHA_KEY, async {
-        let root = get_github_tree(WINGET_GITHUB_BRANCH, false).await?;
-        let manifests = root
-            .tree
-            .iter()
-            .find(|i| i.path == "manifests" && i.item_type == "tree")
-            .ok_or_else(|| anyhow::anyhow!("manifests directory not found in repository"))?;
-        Ok(manifests.sha.clone())
-    })
+    cached_singleflight(
+        storage,
+        &crate::winget::constants::manifests_sha_key(),
+        async {
+            let root = get_github_tree(crate::config::winget_github_branch(), false).await?;
+            let manifests = root
+                .tree
+                .iter()
+                .find(|i| i.path == "manifests" && i.item_type == "tree")
+                .ok_or_else(|| anyhow::anyhow!("manifests directory not found in repository"))?;
+            Ok(manifests.sha.clone())
+        },
+    )
     .await
 }
 
@@ -186,7 +194,7 @@ mod tests {
     async fn stale_tree_is_served_while_background_refresh_runs() {
         let tmp = tempfile::tempdir().unwrap();
         let storage: SharedStorage = Arc::new(FsStorage::new(tmp.path().to_str().unwrap()));
-        let key = format!("{WINGET_CACHE_PREFIX}/test-stale");
+        let key = format!("{}/test-stale", crate::winget::constants::cache_prefix());
         storage.set_raw(&key, br#""old""#).await;
         storage
             .set_meta(

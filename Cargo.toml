@@ -10,7 +10,7 @@ axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "io-util", "signal"] }
 # join_all / buffered — the standard async fan-out primitives; tokio has no equivalent.
 futures = "0.3"
-tower-http = { version = "0.6", features = ["cors", "compression-gzip", "set-header"] }
+tower-http = { version = "0.7", features = ["cors", "compression-gzip", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "gzip"] }
@@ -24,7 +24,7 @@ flate2 = "1"
 tar = "0.4"
 tempfile = "3"
 strsim = "0.11"
-rusqlite = { version = "0.35", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
@@ -35,7 +35,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # rust-s3 (lib name `s3`) is a lightweight reqwest-backed S3 client — reuses the
 # existing reqwest/rustls/hyper-1.x stack instead of aws-sdk-s3's duplicate
 # hyper-0.14 + h2-0.3 + rustls-0.21 runtime. Path-style is RustFS's default.
-rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
+rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls"] }
 bytes = "1"
 rolldown = "1.1"
 # Hook output types (ResolvedExternal etc.) for our storage-backed bundling plugin —

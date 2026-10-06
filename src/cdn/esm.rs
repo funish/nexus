@@ -1,23 +1,44 @@
 use anyhow::Result;
-use rolldown::{Bundler, BundlerOptions, InputItem, OutputFormat, Platform};
+use rolldown::plugin::{
+    HookLoadArgs, HookLoadOutput, HookResolveIdArgs, HookResolveIdOutput, HookUsage, Plugin,
+    PluginContext,
+};
+use rolldown::{BundlerBuilder, BundlerOptions, InputItem, OutputFormat, Platform};
+use rolldown_common::{ImportKind, ResolvedExternal};
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::collections::HashSet;
+use std::fmt;
 
+use crate::cdn::entry::resolve_esm_entry;
 use crate::storage::SharedStorage;
 
-// Bare-import specifiers to rewrite to CDN paths. Compiled once, reused per bundle.
-static IMPORT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r#"(?:import|export)\*?(?:\s*[\s\S]*?from\s*|)["']([^"']+)["']"#).unwrap()
-});
-static DYNAMIC_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r#"import\s*\(\s*["']([^"']+)"#).unwrap());
+/// Facade namespace for `require(external)` → ESM conversion. Rolldown keeps
+/// require semantics for externals (generating a `__require` shim that throws in
+/// browsers), so we turn each CJS require of an external into a virtual CJS module
+/// that re-exports the external's ESM namespace — the same trick as rolldown's
+/// built-in esmExternalRequirePlugin.
+const EXTERNAL_REQUIRE_FACADE: &str = "builtin:esm-external-require:";
+
+/// Prefix for virtual module ids backed by storage. The `scheme://` form is
+/// opaque to rolldown's filesystem resolver (a bare storage key looks like a
+/// relative path and gets mangled); the rest of the id is the storage key.
+const VIRTUAL_PREFIX: &str = "virtual://";
+
+/// Node builtin modules exposed as bare specifiers (without the `node:` prefix).
+/// These can never resolve to an npm package, so they stay external as-is.
+const NODE_BUILTINS: &[&str] = &[
+    "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants",
+    "crypto", "dgram", "diagnostics_channel", "dns", "domain", "events", "fs", "http", "http2",
+    "https", "inspector", "module", "net", "os", "path", "perf_hooks", "process", "punycode",
+    "querystring", "readline", "repl", "stream", "string_decoder", "timers", "tls", "trace_events",
+    "tty", "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib",
+];
 
 #[derive(Clone)]
 pub struct EsmBundleOptions {
     pub package_name: String,
     pub version: String,
-    pub entry_point: String,
 }
 
 pub async fn bundle_esm_package(
@@ -74,9 +95,8 @@ pub async fn bundle_esm_package(
 }
 
 async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Result<String> {
-    // Cap concurrent bundles: rolldown is CPU/memory-heavy and each bundle
-    // unpacks the package to a temp dir. Without this a cold-start burst of
-    // distinct packages can OOM the process.
+    // Cap concurrent bundles: rolldown is CPU/memory-heavy. Without this a
+    // cold-start burst of distinct packages can starve CPU and OOM the process.
     let _bundle_permit = crate::utils::concurrency::BUNDLE_SEMAPHORE
         .acquire()
         .await
@@ -92,37 +112,54 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
         )
     })?;
 
-    if meta.files.is_none() {
-        anyhow::bail!(
-            "Package {}@{} is not cached yet",
-            options.package_name,
-            options.version
-        );
-    }
+    let files: HashSet<String> = meta
+        .files
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
 
     // Read package.json for dependencies
-    let pkg_json_key = format!("{cache_base}/package.json");
-    let pkg_json_data = storage.get_raw(&pkg_json_key).await.ok_or_else(|| {
-        anyhow::anyhow!(
-            "package.json not found for {}@{}",
-            options.package_name,
-            options.version
-        )
-    })?;
+    let pkg_json_data = storage
+        .get_raw(&format!("{cache_base}/package.json"))
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "package.json not found for {}@{}",
+                options.package_name,
+                options.version
+            )
+        })?;
     let pkg_json: serde_json::Value = serde_json::from_slice(&pkg_json_data)?;
 
-    // Collect dependency entries once: externals are their names, and each entry
-    // with a resolvable range also drives a concurrent version fetch for import
-    // rewriting (esm.sh behavior — newest published version satisfying the range).
-    // Fetches hit the metadata cache, so repeated bundles of the same dep tree
-    // are cheap.
+    // Resolve the entry against the package's own file list: the package.json
+    // ESM entry fields first, then common fallback names, then index.json for
+    // data-only packages (a bare JSON bundle exports its payload as default).
+    // Each candidate is verified against the files actually in the package.
+    let entry = [resolve_esm_entry(&pkg_json)]
+        .into_iter()
+        .flatten()
+        .chain(crate::cdn::entry::ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()))
+        .chain(std::iter::once("index.json".to_string()))
+        .find_map(|cand| resolve_in_files(&files, &cand))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No servable entry point for {}@{}",
+                options.package_name,
+                options.version
+            )
+        })?;
+
+    // Collect dependency entries once: each entry with a resolvable range also
+    // drives a concurrent version fetch for import URL resolution (esm.sh
+    // behavior — newest published version satisfying the range). Fetches hit the
+    // metadata cache, so repeated bundles of the same dep tree are cheap.
     let dep_entries: Vec<(String, Option<String>)> = ["dependencies", "peerDependencies"]
         .iter()
         .filter_map(|f| pkg_json[*f].as_object())
         .flatten()
         .map(|(name, range)| (name.clone(), range.as_str().map(String::from)))
         .collect();
-    let externals: Vec<String> = dep_entries.iter().map(|(name, _)| name.clone()).collect();
 
     let mut tasks = tokio::task::JoinSet::new();
     for (name, range_str) in &dep_entries {
@@ -144,175 +181,299 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
         }
     }
 
-    // Read every cached file into memory first (async), so the blocking extract step
-    // never touches the async storage layer.
-    let files = meta.files.unwrap_or_default();
-    let mut file_bytes: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
-    for file in &files {
-        let cache_key = format!("{cache_base}/{}", file.name);
-        if let Some(data) = storage.get_raw(&cache_key).await {
-            file_bytes.push((file.name.clone(), data));
-        }
-    }
-
-    let entry = options
-        .entry_point
-        .strip_prefix("./")
-        .unwrap_or(&options.entry_point)
-        .to_string();
-    let entry_fallbacks: Vec<String> = crate::cdn::entry::ENTRY_FALLBACKS
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-
-    // BLOCKING: write all files to a temp dir and resolve the entry path. std::fs is
-    // synchronous — off the async worker thread so it never stalls a request.
-    // `_tmp_dir` keeps the TempDir alive (its Drop deletes the dir) for the whole
-    // bundling step — naming it `_tmp_dir` rather than `_` preserves it until scope end.
-    let (_tmp_dir, tmp_path_buf, entry_path) =
-        tokio::task::spawn_blocking(move || -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
-            let tmp_dir = tempfile::tempdir()?;
-            let tmp_path_buf = tmp_dir.path().to_path_buf();
-
-            for (name, data) in &file_bytes {
-                let file_path = tmp_dir.path().join(name);
-                if let Some(parent) = file_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(file_path, data)?;
-            }
-
-            // Use the declared entry when present; otherwise fall back to common entry
-            // filenames that actually exist in the extracted package.
-            let entry_path = tmp_dir.path().join(&entry);
-            let entry_path = if entry_path.exists() {
-                entry_path
-            } else {
-                entry_fallbacks
-                    .iter()
-                    .map(|c| tmp_dir.path().join(c))
-                    .find(|p| p.exists())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Entry point {entry} not found in extracted files")
-                    })?
-            };
-            Ok((tmp_dir, tmp_path_buf, entry_path))
+    // Node subpath imports (`#foo` specifiers map through package.json "imports").
+    let imports: HashMap<String, String> = pkg_json["imports"]
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| conditions_target(v).map(|t| (k.clone(), t)))
+                .collect()
         })
-        .await
-        .map_err(|e| anyhow::anyhow!("extract task panicked: {e}"))??;
+        .unwrap_or_default();
 
-    let tmp_path = tmp_path_buf.as_path();
-
-    // Configure rolldown bundler
-    let out_dir = tmp_path.join("__out__");
+    let plugin = StoragePlugin {
+        cache_base,
+        files,
+        dep_versions,
+        imports,
+        storage: storage.clone(),
+    };
 
     let bundler_options = BundlerOptions {
         input: Some(vec![InputItem {
             name: Some("entry".to_string()),
-            import: entry_path.to_string_lossy().to_string(),
+            import: format!("{}{}/{}", VIRTUAL_PREFIX, plugin.cache_base, entry),
         }]),
-        cwd: Some(PathBuf::from(tmp_path)),
-        dir: Some(out_dir.to_string_lossy().to_string()),
         format: Some(OutputFormat::Esm),
         platform: Some(Platform::Browser),
-        external: Some(externals.into()),
         minify: Some(rolldown::RawMinifyOptions::Bool(true)),
         ..Default::default()
     };
 
-    // Run bundler (rolldown's own async API — CPU-heavy but correctly on the runtime).
-    let mut bundler = Bundler::new(bundler_options)?;
-    let _output = bundler.write().await?;
-
-    // BLOCKING: read the output file off the async worker.
-    let out_dir_clone = out_dir.clone();
-    let code = tokio::task::spawn_blocking(move || -> Result<String> {
-        if let Ok(entries) = std::fs::read_dir(&out_dir_clone) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "mjs" || e == "js") {
-                    return Ok(std::fs::read_to_string(&path)?);
-                }
-            }
-        }
-        anyhow::bail!("Rolldown produced no output")
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("output read task panicked: {e}"))??;
-
-    // Rewrite bare imports to CDN paths
-    let code = rewrite_imports(&code, &dep_versions);
-
-    // Clean up
+    let mut bundler = BundlerBuilder::default()
+        .with_options(bundler_options)
+        .with_plugins(vec![<StoragePlugin as Plugin>::new_shared(plugin)])
+        .build()?;
+    let output = bundler.generate().await?;
     bundler.close().await?;
 
-    Ok(code)
-}
-
-/// Rewrite bare import specifiers to CDN paths. Chains both regex passes into a
-/// single owning String instead of copying the (potentially hundreds-of-KB) bundle
-/// three times — `replace_all` returns a `Cow`, which we own in place before the
-/// next pass borrows it.
-fn rewrite_imports(code: &str, deps: &HashMap<String, String>) -> String {
-    // Rewrite static imports
-    let owned = IMPORT_RE.replace_all(code, |caps: &regex::Captures| {
-        let full = &caps[0];
-        let spec = &caps[1];
-        if spec.starts_with('.') || spec.starts_with('/') {
-            return full.to_string();
+    for out in &output.assets {
+        if let rolldown_common::Output::Chunk(chunk) = out {
+            return Ok(chunk.code.to_string());
         }
-        let cdn_path = to_cdn_path(spec, deps);
-        full.replace(spec, &cdn_path)
-    });
-
-    // Rewrite dynamic imports — borrow the already-owned string from pass 1.
-    let owned = DYNAMIC_RE.replace_all(&owned, |caps: &regex::Captures| {
-        let full = &caps[0];
-        let spec = &caps[1];
-        if spec.starts_with('.') || spec.starts_with('/') {
-            return full.to_string();
-        }
-        let cdn_path = to_cdn_path(spec, deps);
-        full.replace(spec, &cdn_path)
-    });
-
-    owned.into_owned()
-}
-
-fn to_cdn_path(spec: &str, deps: &HashMap<String, String>) -> String {
-    let parts: Vec<&str> = spec.split('/').collect();
-
-    let (dep_name, sub_path) = if parts.first().is_some_and(|p| p.starts_with('@')) {
-        let name = if parts.len() >= 2 {
-            format!("{}/{}", parts[0], parts[1])
-        } else {
-            parts[0].to_string()
-        };
-        let sub = parts[2..].join("/");
-        (name, sub)
-    } else {
-        let name = parts.first().unwrap_or(&"").to_string();
-        let sub = parts[1..].join("/");
-        (name, sub)
-    };
-
-    if let Some(version) = deps.get(&dep_name) {
-        if sub_path.is_empty() {
-            format!("/cdn/npm/{dep_name}@{version}/+esm")
-        } else {
-            format!("/cdn/npm/{dep_name}@{version}/{sub_path}")
-        }
-    } else if sub_path.is_empty() {
-        format!("/cdn/npm/{dep_name}/+esm")
-    } else {
-        format!("/cdn/npm/{dep_name}/{sub_path}")
     }
+    anyhow::bail!("Rolldown produced no output")
+}
+
+/// Rolldown plugin that serves package files straight from the storage layer and
+/// rewrites bare imports to `/cdn/npm/...` URLs — no temp dir, no regex pass over
+/// the output. Relative imports resolve against the cached file list with npm
+/// extension/index fallbacks, so the bundle never touches the filesystem.
+struct StoragePlugin {
+    /// Storage prefix of the package being bundled, e.g. `cdn/npm/foo/1.2.3`.
+    /// Doubles as the virtual module namespace: a module id is the storage key.
+    cache_base: String,
+    /// File names inside the package (relative to the package root).
+    files: HashSet<String>,
+    /// Dependency name → resolved version for import URL rewriting.
+    dep_versions: HashMap<String, String>,
+    /// package.json `imports` mappings for `#foo` subpath import specifiers.
+    imports: HashMap<String, String>,
+    storage: SharedStorage,
+}
+
+impl fmt::Debug for StoragePlugin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoragePlugin")
+            .field("cache_base", &self.cache_base)
+            .field("files", &self.files.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// `/`-normalized join of a virtual directory and a relative specifier.
+fn join_virtual(dir: &str, spec: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    let joined = format!("{dir}/{spec}");
+    for seg in joined.split('/') {
+        match seg {
+            ".." => {
+                segments.pop();
+            }
+            "." | "" => {}
+            s => segments.push(s),
+        }
+    }
+    segments.join("/")
+}
+
+/// Match a package-relative name against the cached file list, with npm-style
+/// extension and index fallbacks (`main: "./index"` packages are common).
+/// Returns the matching file name.
+fn resolve_in_files(files: &HashSet<String>, name: &str) -> Option<String> {
+    let name = name.trim_start_matches("./");
+    [
+        name.to_string(),
+        format!("{name}.js"),
+        format!("{name}.mjs"),
+        format!("{name}.cjs"),
+        format!("{name}.json"),
+        format!("{name}/index.js"),
+        format!("{name}/index.mjs"),
+        format!("{name}/index.cjs"),
+    ]
+    .into_iter()
+    .find(|cand| files.contains(cand))
+}
+
+/// Flatten an `imports`/`exports`-style value to its file target: a plain string,
+/// or a conditions object preferring browser > import > default.
+fn conditions_target(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        obj @ serde_json::Value::Object(_) => ["browser", "import", "default"]
+            .iter()
+            .find_map(|c| obj.get(*c).and_then(conditions_target)),
+        _ => None,
+    }
+}
+
+impl StoragePlugin {
+    /// Resolve a relative specifier from a package-internal importer against the
+    /// cached file list. Returns a full virtual module id.
+    fn resolve_relative(&self, importer: &str, spec: &str) -> Option<String> {
+        let importer = importer.strip_prefix(VIRTUAL_PREFIX)?;
+        let dir = importer.rsplit_once('/').map(|(d, _)| d)?;
+        let target = join_virtual(dir, spec);
+        let rest = target.strip_prefix(&self.cache_base)?.trim_start_matches('/');
+        resolve_in_files(&self.files, rest)
+            .map(|cand| format!("{VIRTUAL_PREFIX}/{}/{cand}", self.cache_base))
+    }
+
+    fn cdn_url(&self, pkg: &str, subpath: &str) -> String {
+        match self.dep_versions.get(pkg) {
+            Some(v) if subpath.is_empty() => format!("/cdn/npm/{pkg}@{v}/+esm"),
+            Some(v) => format!("/cdn/npm/{pkg}@{v}/{subpath}"),
+            None if subpath.is_empty() => format!("/cdn/npm/{pkg}/+esm"),
+            None => format!("/cdn/npm/{pkg}/{subpath}"),
+        }
+    }
+}
+
+impl Plugin for StoragePlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("nexus-storage")
+    }
+
+    async fn resolve_id(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> rolldown::plugin::HookResolveIdReturn {
+        let spec = args.specifier;
+
+        // Imports inside a require facade stay external at their CDN URL — the
+        // facade's `import * as m from ...` must survive into the output.
+        if args
+            .importer
+            .is_some_and(|i| i.starts_with(EXTERNAL_REQUIRE_FACADE))
+        {
+            return Ok(Some(HookResolveIdOutput {
+                id: spec.to_string().into(),
+                external: Some(ResolvedExternal::Bool(true)),
+                ..Default::default()
+            }));
+        }
+
+        // Package-internal module: the id is VIRTUAL_PREFIX + the storage key.
+        // The entry input arrives in this form.
+        if let Some(rest) = spec.strip_prefix(VIRTUAL_PREFIX) {
+            let name = rest
+                .strip_prefix(&self.cache_base)
+                .and_then(|r| r.strip_prefix('/'))
+                .unwrap_or_default();
+            if let Some(cand) = resolve_in_files(&self.files, name) {
+                return Ok(Some(HookResolveIdOutput::from_id(format!(
+                    "{VIRTUAL_PREFIX}/{}/{cand}",
+                    self.cache_base
+                ))));
+            }
+            return Ok(None);
+        }
+
+        // Node subpath imports (`#foo`), mapped through package.json "imports".
+        // Unmapped `#` specifiers never resolve (let-else keeps them away from the
+        // package-name branch below, which would build a broken URL).
+        if spec.starts_with('#') {
+            let cand = self
+                .imports
+                .get(spec)
+                .and_then(|target| resolve_in_files(&self.files, target));
+            if let Some(cand) = cand {
+                return Ok(Some(HookResolveIdOutput::from_id(format!(
+                    "{VIRTUAL_PREFIX}/{}/{cand}",
+                    self.cache_base
+                ))));
+            }
+            return Ok(None);
+        }
+
+        // Relative import within the package.
+        if spec.starts_with('.') {
+            if let Some(id) = args
+                .importer
+                .and_then(|importer| self.resolve_relative(importer, spec))
+            {
+                return Ok(Some(HookResolveIdOutput::from_id(id)));
+            }
+            return Ok(None);
+        }
+
+        // Bare specifier: an npm dependency (or a node builtin / absolute path /
+        // URL scheme, which never map to our CDN and stay external as-is).
+        let looks_like_package = !spec.starts_with('/')
+            && !spec.starts_with('\\')
+            && !spec.contains(':')
+            && !spec.contains('\\')
+            && !is_node_builtin(spec);
+        if !looks_like_package {
+            return Ok(None);
+        }
+
+        let (pkg, subpath) = split_bare_specifier(spec);
+        let url = self.cdn_url(pkg, subpath);
+        if matches!(args.kind, ImportKind::Require) {
+            return Ok(Some(HookResolveIdOutput::from_id(format!(
+                "{EXTERNAL_REQUIRE_FACADE}{url}"
+            ))));
+        }
+        Ok(Some(HookResolveIdOutput {
+            id: url.into(),
+            external: Some(ResolvedExternal::Bool(true)),
+            ..Default::default()
+        }))
+    }
+
+    async fn load(
+        &self,
+        _ctx: rolldown::plugin::SharedLoadPluginContext,
+        args: &HookLoadArgs<'_>,
+    ) -> rolldown::plugin::HookLoadReturn {
+        // CJS require of an external → virtual module that re-exports the
+        // external's ESM namespace. When the dependency itself is a converted CJS
+        // package its exports live on `default`; a plain ESM dependency falls
+        // through to the namespace (mirrors Node's require(esm) semantics).
+        if let Some(url) = args.id.strip_prefix(EXTERNAL_REQUIRE_FACADE) {
+            let code = format!(
+                "import * as m from '{url}';module.exports = \
+                 Object.prototype.hasOwnProperty.call(m, 'module.exports') \
+                 ? m['module.exports'] : (m.default ?? m);"
+            );
+            return Ok(Some(HookLoadOutput { code: code.into(), ..Default::default() }));
+        }
+
+        if let Some(key) = args.id.strip_prefix(VIRTUAL_PREFIX)
+            && let Some(data) = self.storage.get_raw(key).await
+        {
+            let code = String::from_utf8_lossy(&data);
+            return Ok(Some(HookLoadOutput { code: code.into_owned().into(), ..Default::default() }));
+        }
+        Ok(None)
+    }
+
+    fn register_hook_usage(&self) -> HookUsage {
+        HookUsage::ResolveId | HookUsage::Load
+    }
+}
+
+/// `@scope/name[/subpath]` or `name[/subpath]` → (package, subpath).
+fn split_bare_specifier(spec: &str) -> (&str, &str) {
+    if let Some(rest) = spec.strip_prefix('@')
+        && let Some((scope, remainder)) = rest.split_once('/')
+    {
+        return match remainder.split_once('/') {
+            Some((name, sub)) => (&spec[..scope.len() + 1 + name.len() + 1], sub),
+            None => (spec, ""),
+        };
+    }
+    match spec.split_once('/') {
+        Some((name, sub)) => (name, sub),
+        None => (spec, ""),
+    }
+}
+
+fn is_node_builtin(spec: &str) -> bool {
+    if spec.starts_with("node:") {
+        return true;
+    }
+    let root = spec.split('/').next().unwrap_or(spec);
+    NODE_BUILTINS.contains(&root)
 }
 
 /// Newest published version of `package_name` satisfying `req`, or `None` if
 /// metadata is unavailable or no version matches. Returning `None` (rather than
-/// erroring) keeps bundling resilient to a registry hiccup — the caller just
-/// leaves that import bare.
+/// erroring) keeps bundling resilient to a registry hiccup — the import URL just
+/// omits the version and the CDN resolves it per-request.
 async fn latest_version_satisfying(
     storage: &SharedStorage,
     package_name: &str,

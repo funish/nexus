@@ -13,6 +13,13 @@ use crate::utils::http::{GITHUB_TOKEN, get_with_retry};
 /// Per-request timeout for registry metadata fetches.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(CDN_FETCH_TIMEOUT_SECS);
 
+/// Abbreviated packument ("corgi doc"): strips readme/description/keywords/time/
+/// author/maintainers — everything we don't read — while keeping versions,
+/// dist-tags, and dist.tarball/unpackedSize, which is all resolve/esm use. Cuts
+/// large packuments by an order of magnitude, so the per-request Value parse
+/// stays proportional to install data instead of human-facing metadata.
+const NPM_ABBREVIATED_ACCEPT: &str = "application/vnd.npm.install-v1+json";
+
 pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> Result<Value> {
     let package_name = package_name.to_string();
     cached_json(
@@ -21,7 +28,7 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         META_CACHE_TTL_SECS,
         async move {
             let url = format!("{}/{package_name}", npm_registry());
-            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
+            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[("Accept", NPM_ABBREVIATED_ACCEPT)]).await?;
             if !resp.status().is_success() {
                 anyhow::bail!("Package not found: {package_name}");
             }

@@ -6,9 +6,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use crate::cdn::constants::*;
-use crate::cdn::entry::{
-    ENTRY_FALLBACKS, resolve_default_file, resolve_esm_entry, resolve_style_file,
-};
+use crate::cdn::entry::{ENTRY_FALLBACKS, resolve_default_file, resolve_style_file};
 use crate::cdn::esm::{EsmBundleOptions, bundle_esm_package};
 use crate::cdn::listing::{CdnOrgListing, CdnPackageListing, get_directory_listing};
 use crate::cdn::minify::minified_entry;
@@ -189,11 +187,10 @@ pub async fn handle_npm(
     }
 }
 
-/// `+esm`: bundle the package entry to a browser-native ESM module.
+/// `+esm`: bundle the package entry to a browser-native ESM module. Entry
+/// resolution (package.json fields, fallbacks, index.json) lives in the bundler,
+/// which validates candidates against the cached file list.
 async fn serve_esm_bundle(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
-    let entry_file =
-        resolve_esm_entry(&ctx.resolved.version_info).unwrap_or_else(|| "index.js".to_string());
-
     if !ctx.is_cached {
         cache_package_from_tarball(
             ctx.storage,
@@ -210,7 +207,6 @@ async fn serve_esm_bundle(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
         &EsmBundleOptions {
             package_name: ctx.package_name.to_string(),
             version: ctx.resolved.version.clone(),
-            entry_point: entry_file.clone(),
         },
     )
     .await
@@ -219,7 +215,7 @@ async fn serve_esm_bundle(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
     // jsDelivr: an exact version is immutable (1yr); a latest/range alias can move to a
     // new version, so clients must revalidate — never mark an alias immutable.
     Ok(file_response_versioned(
-        &entry_file,
+        "",
         code.as_bytes(),
         ctx.cache_control,
         ctx.headers,
@@ -274,14 +270,22 @@ async fn serve_root_listing(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
 /// minified). Cached packages read candidates from storage; cold packages download the
 /// tarball once and warm the full package in the background reusing those bytes.
 async fn serve_entry_file(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
-    // jsDelivr priority (jsdelivr > browser > main, then CSS `style`), then common
-    // fallback filenames tried against the actual package contents.
-    let entry_candidates = resolve_default_file(&ctx.resolved.version_info)
-        .or_else(|| resolve_style_file(&ctx.resolved.version_info))
-        .into_iter()
-        .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()));
-
+    // jsDelivr priority (jsdelivr > browser > main, then CSS `style`) reads the
+    // package's own package.json — the abbreviated packument cache doesn't carry
+    // entry fields. Cold packages extract it from the tarball fetched below.
     let (entry_file, original) = if ctx.is_cached {
+        let pkg_json = ctx
+            .storage
+            .get_raw(&format!("{}/package.json", ctx.cache_base))
+            .await
+            .ok_or_else(|| AppError::not_found("Entry file not found"))?;
+        let pkg: serde_json::Value = serde_json::from_slice(&pkg_json)
+            .map_err(|e| AppError::bad_gateway(format!("invalid package.json: {e}")))?;
+        let entry_candidates = resolve_default_file(&pkg)
+            .or_else(|| resolve_style_file(&pkg))
+            .into_iter()
+            .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()));
+
         // Filter candidates against the cached file list — reuse the meta
         // is_package_cached already loaded, instead of probing each candidate with its
         // own get_raw round-trip (or a second get_meta).
@@ -309,6 +313,13 @@ async fn serve_entry_file(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
         let bytes = download_tarball(ctx.tarball_url)
             .await
             .map_err(|e| AppError::bad_gateway(e.to_string()))?;
+        let pkg: serde_json::Value = extract_file_from_tgz(&bytes, "package.json")
+            .and_then(|d| serde_json::from_slice(&d).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let entry_candidates = resolve_default_file(&pkg)
+            .or_else(|| resolve_style_file(&pkg))
+            .into_iter()
+            .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()));
         let mut found = None;
         for cand in entry_candidates {
             if let Some(data) = extract_file_from_tgz(&bytes, &cand) {

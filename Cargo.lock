@@ -1843,6 +1843,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rolldown",
+ "rolldown_common",
  "rusqlite",
  "rust-s3",
  "semver",

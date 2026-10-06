@@ -38,6 +38,9 @@ chrono = { version = "0.4", features = ["serde"] }
 rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
 bytes = "1"
 rolldown = "1.1"
+# Hook output types (ResolvedExternal etc.) for our storage-backed bundling plugin —
+# pinned to the same 1.2.x line rolldown uses so they unify into one copy.
+rolldown_common = "1.2"
 # oxc shares the exact version rolldown pins (0.151) — same toolchain, no second copy.
 oxc = { version = "0.151", default-features = false, features = ["minifier", "mangler", "codegen"] }
 lightningcss = "1.0.0-alpha.71"

@@ -29,8 +29,17 @@ pub fn resolve_default_file(pkg: &Value) -> Option<String> {
 /// because the goal is a browser ESM bundle, so module-aware fields win:
 /// `exports["."]` conditions > `browser`(string) > `module` > `jsdelivr` > `main`.
 pub fn resolve_esm_entry(pkg: &Value) -> Option<String> {
-    // exports["."] — Node's modern entry standard (string form or conditions object).
-    if let Some(dot) = pkg.get("exports").and_then(|e| e.get(".")) {
+    // exports — Node's modern entry standard. It may be a string, a {".": ...}
+    // mapping, or a bare conditions object (a "."-less object is Node's shorthand
+    // for "."'s conditions).
+    let exports = pkg.get("exports");
+    let dot = match exports {
+        Some(v @ Value::String(_)) => Some(v),
+        Some(Value::Object(o)) if !o.contains_key(".") => exports,
+        Some(o) => o.get("."),
+        _ => None,
+    };
+    if let Some(dot) = dot {
         if let Some(s) = dot.as_str() {
             return Some(strip_dot_slash(s).to_string());
         }

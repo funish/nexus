@@ -394,14 +394,17 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
     .await??;
 
     let search_index = load_persisted_index(storage, &db_hash).await?;
-    let database = prepare_database(data.clone(), search_index.is_none()).await?;
+
+    // Persist before moving `data` into the snapshot loader — avoids cloning the
+    // multi-MB database just to hand one copy to each of storage and SQLite.
+    storage.set_raw(index_db_key().as_str(), &data).await;
+    let database = prepare_database(data, search_index.is_none()).await?;
     let search_index = if let Some(index) = search_index {
         index
     } else {
         build_and_persist_index(&database, storage, &db_hash).await?
     };
 
-    storage.set_raw(index_db_key().as_str(), &data).await;
     let mut meta = CacheMeta::default();
     if let Some(source_version) = source_version {
         meta.extra

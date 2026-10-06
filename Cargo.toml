@@ -44,6 +44,10 @@ lightningcss = "1.0.0-alpha.71"
 regex = "1"
 url = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Global allocator: mimalloc decommits freed pages back to the OS promptly, so
+# RSS tracks live memory instead of pinning at the bundling/download peak (the
+# Windows HeapAlloc default keeps it at the historical high-water mark).
+mimalloc = "0.1"
 
 [profile.release]
 lto = "fat"

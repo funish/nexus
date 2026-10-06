@@ -9,10 +9,14 @@ mod winget;
 use axum::Router;
 use axum::http::{HeaderName, HeaderValue};
 use axum::routing::get;
+use mimalloc::MiMalloc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing_subscriber::EnvFilter;
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 
 /// Shared application state passed to all handlers.
 pub type AppState = (storage::SharedStorage, winget::db::SharedDb);

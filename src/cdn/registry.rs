@@ -29,7 +29,14 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         async move {
             let url = format!("{}/{package_name}", npm_registry());
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[("Accept", NPM_ABBREVIATED_ACCEPT)]).await?;
-            if !resp.status().is_success() {
+            let status = resp.status();
+            if !status.is_success() {
+                // 404 means the package doesn't exist; anything else is an upstream
+                // outage worth a log line (retrying callers already surfaced the
+                // status, but the failure is invisible once it reaches the handler).
+                if status.as_u16() != 404 {
+                    tracing::warn!("npm registry upstream error: HTTP {status} for {package_name}");
+                }
                 anyhow::bail!("Package not found: {package_name}");
             }
             Ok(resp.json::<Value>().await?)

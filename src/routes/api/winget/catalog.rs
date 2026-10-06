@@ -1,6 +1,5 @@
 //! WinGet REST Source HTTP routes.
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -56,8 +55,19 @@ pub async fn handle_manifest_search_get(
 pub async fn handle_manifest_search_post(
     State((storage, db)): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<ManifestSearchRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
+    // Parse the body manually so a malformed payload answers in the spec's error
+    // shape ([{ErrorCode, ErrorMessage}]) instead of axum's plain-text rejection.
+    let req: ManifestSearchRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return winget_error(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid request body: {e}"),
+            );
+        }
+    };
     let keyword = req.query.as_ref().and_then(|q| q.key_word.clone());
     let match_type = req
         .query
@@ -116,6 +126,11 @@ async fn run_and_build(
     } else {
         None
     };
+    // Spec: "204 No results were found." — an empty hit set answers 204 without a
+    // body, matching the reference implementation's behavior for winget clients.
+    if results.is_empty() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let body = ManifestSearchResponse {
         data: results,
         continuation_token,

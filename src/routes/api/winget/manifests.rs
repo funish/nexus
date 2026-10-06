@@ -390,8 +390,10 @@ pub async fn handle_package_manifest(
 
     // Build all version manifests concurrently (mirrors the Promise.allSettled in the
     // pre-Rust TS route). `buffered` preserves input order, so the descending version
-    // order from load_versions survives the fan-out.
-    let entries: Vec<Option<VersionManifest>> = stream::iter(versions.iter().cloned())
+    // order from load_versions survives the fan-out. Build errors are kept, not
+    // flattened away — a package whose every version fails to build answers 502
+    // rather than a silent 200 with no versions.
+    let entries: Vec<anyhow::Result<Option<VersionManifest>>> = stream::iter(versions.iter().cloned())
         .map(|version| {
             // Each build task needs its own handles: `map` is FnMut, so the captured
             // Arc/String can't move into every future — clone per iteration instead.
@@ -400,26 +402,41 @@ pub async fn handle_package_manifest(
             async move { build_version_manifest(&storage, &package_id, &version).await }
         })
         .buffered(WINGET_MANIFEST_BUILD_CONCURRENCY)
-        .map(|res| res.ok().flatten())
         .collect()
         .await;
 
     let mut manifest_versions: Vec<VersionManifest> = Vec::with_capacity(entries.len());
-    for entry in entries.into_iter().flatten() {
-        // Channel filter.
-        if let Some(channel) = &params.channel
-            && entry.channel.as_deref() != Some(channel.as_str())
-        {
-            continue;
+    let mut build_failures = 0usize;
+    for entry in entries {
+        match entry {
+            Ok(Some(manifest)) => {
+                // Channel filter.
+                if let Some(channel) = &params.channel
+                    && manifest.channel.as_deref() != Some(channel.as_str())
+                {
+                    continue;
+                }
+                // Market filter (requires at least one matching installer).
+                if let Some(market) = &params.market
+                    && let Some(installers) = &manifest.installers
+                    && !installers.iter().any(|i| market_matches(i, market))
+                {
+                    continue;
+                }
+                manifest_versions.push(manifest);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                build_failures += 1;
+                tracing::warn!("Manifest build failed for {package_id}: {e}");
+            }
         }
-        // Market filter (requires at least one matching installer).
-        if let Some(market) = &params.market
-            && let Some(installers) = &entry.installers
-            && !installers.iter().any(|i| market_matches(i, market))
-        {
-            continue;
-        }
-        manifest_versions.push(entry);
+    }
+    if manifest_versions.is_empty() && build_failures > 0 {
+        return winget_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("Manifests unavailable for package '{package_id}' (upstream fetch failed)"),
+        );
     }
 
     json_ok(&PackageManifestResponse {

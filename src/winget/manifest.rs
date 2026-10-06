@@ -95,17 +95,24 @@ pub async fn fetch_manifest_content(
         let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
 
         let url = format!("{}/{path_c}", crate::winget::constants::github_raw_base());
-        if let Ok(resp) = crate::utils::http::get_with_retry(
+        match crate::utils::http::get_with_retry(
             &url,
             Duration::from_secs(30),
             crate::utils::http::GITHUB_TOKEN.as_deref(),
             &[],
         )
         .await
-            && resp.status().is_success()
-            && let Ok(content) = resp.text().await
         {
-            storage_c.set_raw(&key_c, content.as_bytes()).await;
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(content) = resp.text().await {
+                    storage_c.set_raw(&key_c, content.as_bytes()).await;
+                }
+            }
+            Ok(resp) => tracing::warn!(
+                "WinGet manifest fetch failed: HTTP {} for {path_c}",
+                resp.status()
+            ),
+            Err(e) => tracing::warn!("WinGet manifest fetch failed for {path_c}: {e}"),
         }
     })
     .await;
@@ -217,7 +224,9 @@ async fn version_manifest_refresher(
         if cache_fresh(&storage, &cache_key, WINGET_UPDATE_INTERVAL_SECS).await {
             return;
         }
-        let _ = rebuild_version_manifest(&storage, &package_id, &version).await;
+        if let Err(e) = rebuild_version_manifest(&storage, &package_id, &version).await {
+            tracing::warn!("WinGet manifest rebuild failed for {package_id}@{version}: {e}");
+        }
     })
     .await;
 }

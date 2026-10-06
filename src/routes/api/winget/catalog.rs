@@ -9,7 +9,7 @@ use crate::storage::SharedStorage;
 use crate::winget::db::{SharedDb, get_index_db, get_search_index};
 use crate::winget::queries::package_exists;
 use crate::winget::rest::{
-    AuthenticationInfo, InformationData, InformationResponse, ManifestSearchRequest,
+    InformationData, InformationResponse, ManifestSearchRequest,
     ManifestSearchResponse, MatchType, PackageIdentifierItem, PackageMatchFilter,
     PackageSingleResponse, PackagesResponse, json_ok, winget_error,
 };
@@ -126,11 +126,8 @@ async fn run_and_build(
     } else {
         None
     };
-    // Spec: "204 No results were found." — an empty hit set answers 204 without a
-    // body, matching the reference implementation's behavior for winget clients.
-    if results.is_empty() {
-        return StatusCode::NO_CONTENT.into_response();
-    }
+    // The reference implementation answers an empty hit set with 200 and an empty
+    // Data array (no 204 branch), so winget clients never see No-Content here.
     let body = ManifestSearchResponse {
         data: results,
         continuation_token,
@@ -204,12 +201,19 @@ pub async fn handle_packages(
     }
 }
 
-/// GET /api/winget/information — static server information.
+/// GET /api/winget/information — static server information. Mirrors the
+/// reference implementation: the version list from ApiConstants, and no
+/// Authentication block when the source doesn't use one.
 pub async fn handle_information() -> Response {
     let body = InformationResponse {
         data: InformationData {
             source_identifier: crate::config::winget_source_identifier().to_string(),
-            server_supported_versions: vec!["1.4.0".to_string(), "1.9.0".to_string()],
+            server_supported_versions: [
+                "1.0.0", "1.1.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.9.0", "1.10.0",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             required_package_match_fields: vec!["PackageIdentifier".to_string()],
             unsupported_package_match_fields: vec![
                 "Market".to_string(),
@@ -217,9 +221,6 @@ pub async fn handle_information() -> Response {
             ],
             unsupported_query_parameters: vec!["FetchAllManifests".to_string()],
             required_query_parameters: vec![],
-            authentication: AuthenticationInfo {
-                authentication_type: "none".to_string(),
-            },
         },
     };
     json_ok(&body)

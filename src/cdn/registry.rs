@@ -20,6 +20,13 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(CDN_FETCH_TIMEOUT_SECS);
 /// stays proportional to install data instead of human-facing metadata.
 const NPM_ABBREVIATED_ACCEPT: &str = "application/vnd.npm.install-v1+json";
 
+/// Marker for a registry outage (429/5xx after retries) as opposed to a package
+/// that genuinely doesn't exist. Callers map it to 502 so transient upstream
+/// failures aren't cacheable 404s (jsDelivr treats those the same way).
+#[derive(Debug, thiserror::Error)]
+#[error("registry upstream error: HTTP {0}")]
+pub struct RegistryUpstreamError(pub u16);
+
 pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> Result<Value> {
     let package_name = package_name.to_string();
     cached_json(
@@ -31,13 +38,11 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
             let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[("Accept", NPM_ABBREVIATED_ACCEPT)]).await?;
             let status = resp.status();
             if !status.is_success() {
-                // 404 means the package doesn't exist; anything else is an upstream
-                // outage worth a log line (retrying callers already surfaced the
-                // status, but the failure is invisible once it reaches the handler).
-                if status.as_u16() != 404 {
-                    tracing::warn!("npm registry upstream error: HTTP {status} for {package_name}");
+                if status.as_u16() == 404 {
+                    anyhow::bail!("Package not found: {package_name}");
                 }
-                anyhow::bail!("Package not found: {package_name}");
+                tracing::warn!("npm registry upstream error: HTTP {status} for {package_name}");
+                return Err(RegistryUpstreamError(status.as_u16()).into());
             }
             Ok(resp.json::<Value>().await?)
         },

@@ -146,13 +146,6 @@ pub struct InformationData {
     pub unsupported_package_match_fields: Vec<String>,
     pub unsupported_query_parameters: Vec<String>,
     pub required_query_parameters: Vec<String>,
-    pub authentication: AuthenticationInfo,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct AuthenticationInfo {
-    pub authentication_type: String,
 }
 
 /// GET /packages/:id response.
@@ -271,16 +264,17 @@ pub fn json_ok<T: Serialize>(body: &T) -> Response {
         .into_response()
 }
 
-/// Build a WinGet-spec error response: `[{ ErrorCode, ErrorMessage }]`.
+/// Build a WinGet-spec error response. The reference implementation serializes a
+/// single `{ErrorCode, ErrorMessage}` object (InternalRestError), not an array.
 pub fn winget_error(status: StatusCode, message: &str) -> Response {
-    let body = vec![WinGetErrorItem {
+    let body = WinGetErrorItem {
         error_code: status.as_u16(),
         error_message: message.to_string(),
-    }];
+    };
     (
         status,
         [("content-type", "application/json")],
-        serde_json::to_string(&body).unwrap_or_else(|_| "[]".to_string()),
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string()),
     )
         .into_response()
 }

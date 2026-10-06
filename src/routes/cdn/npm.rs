@@ -10,7 +10,7 @@ use crate::cdn::entry::{ENTRY_FALLBACKS, resolve_default_file, resolve_style_fil
 use crate::cdn::esm::{EsmBundleOptions, bundle_esm_package};
 use crate::cdn::listing::{CdnOrgListing, CdnPackageListing, get_directory_listing};
 use crate::cdn::minify::minified_entry;
-use crate::cdn::registry::fetch_npm_metadata;
+use crate::cdn::registry::{RegistryUpstreamError, fetch_npm_metadata};
 use crate::cdn::resolve::{ResolvedVersion, resolve_registry_version};
 use crate::cdn::response::file_response_versioned;
 use crate::cdn::tarball::{
@@ -127,10 +127,17 @@ pub async fn handle_npm(
         } => (name, version, filepath),
     };
 
-    // Fetch metadata + resolve version (shared by all package branches).
+    // Fetch metadata + resolve version (shared by all package branches). A registry
+    // outage answers 502 (not cacheable); only a genuine miss is a 404.
     let metadata = fetch_npm_metadata(&storage, &package_name)
         .await
-        .map_err(|_| AppError::not_found("Package not found"))?;
+        .map_err(|e| {
+            if e.downcast_ref::<RegistryUpstreamError>().is_some() {
+                AppError::bad_gateway(e.to_string())
+            } else {
+                AppError::not_found("Package not found")
+            }
+        })?;
     let resolved = resolve_registry_version(&metadata, &version)
         .ok_or_else(|| AppError::not_found("Version not found"))?;
 

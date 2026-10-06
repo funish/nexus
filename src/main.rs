@@ -32,20 +32,15 @@ async fn main() {
     let storage = storage::create_storage(&config).await;
     let winget_db = winget::db::create_shared_db();
 
-    // Permissive CORS for a public CDN: any origin, method, and request header.
-    // Safelisted response headers (cache-control, content-length, content-type, ...)
-    // are browser-readable by default; expose_headers adds the custom ones
-    // cross-origin JS needs — etag for conditional requests and x-resolved-version
-    // so callers learn the exact version a range/tag resolved to.
+    // Permissive CORS for a public CDN: any origin, method, and request header,
+    // and every response header exposed cross-origin (jsDelivr's
+    // `access-control-expose-headers: *`) so browser JS can read etag and the
+    // resolved-version headers for conditional requests and range aliases.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any)
-        .expose_headers([
-            HeaderName::from_static("etag"),
-            HeaderName::from_static("x-resolved-version"),
-            HeaderName::from_static("last-modified"),
-        ]);
+        .expose_headers(Any);
 
     // Gzip JS/CSS/JSON responses; tower-http skips already-compressed types
     // (images, fonts, archives) and honors the client's Accept-Encoding.

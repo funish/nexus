@@ -10,6 +10,14 @@ use axum::response::{IntoResponse, Response};
 use super::integrity::calculate_integrity;
 use super::mime::get_content_type;
 
+/// jsDelivr-style weak ETag `W/"<len>-<hash>"`. The hash half is the SRI digest
+/// already computed (and cached in package meta), so no extra hashing happens —
+/// only the presentation differs from the `sha256-` form.
+fn weak_etag(len: usize, integrity: &str) -> String {
+    let hash = integrity.strip_prefix("sha256-").unwrap_or(integrity);
+    format!("W/\"{len}-{hash}\"")
+}
+
 /// Return a 304 when the client's `If-None-Match` equals `etag`, otherwise `None`.
 pub fn if_none_match_304(headers: &HeaderMap, etag: &str) -> Option<Response> {
     let matches = headers
@@ -38,9 +46,12 @@ pub fn file_response(
     // Reuse a precomputed integrity (e.g. from the cached package meta) when
     // available; otherwise hash the body. Avoids re-running SHA-256 on every
     // request for a file whose integrity is already cached.
-    let etag = etag
-        .map(str::to_string)
-        .unwrap_or_else(|| calculate_integrity(data));
+    let etag = weak_etag(
+        data.len(),
+        &etag
+            .map(str::to_string)
+            .unwrap_or_else(|| calculate_integrity(data)),
+    );
     if let Some(resp) = if_none_match_304(headers, &etag) {
         return resp;
     }

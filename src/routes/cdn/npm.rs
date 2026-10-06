@@ -214,8 +214,10 @@ async fn serve_esm_bundle(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
 
     // jsDelivr: an exact version is immutable (1yr); a latest/range alias can move to a
     // new version, so clients must revalidate — never mark an alias immutable.
+    // The bundle is always JavaScript, so name it accordingly for the MIME guess —
+    // an empty name would fall back to application/octet-stream (a download).
     Ok(file_response_versioned(
-        "",
+        "index.js",
         code.as_bytes(),
         ctx.cache_control,
         ctx.headers,

@@ -95,14 +95,9 @@ pub async fn fetch_manifest_content(
         let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
 
         let url = format!("{}/{path_c}", crate::winget::constants::github_raw_base());
-        match crate::utils::http::get_with_retry(
-            &url,
-            Duration::from_secs(30),
-            crate::utils::http::GITHUB_TOKEN.as_deref(),
-            &[],
-        )
-        .await
-        {
+        // raw.githubusercontent.com does not consume GitHub API credentials;
+        // reserving the token for api.github.com avoids leaking it needlessly.
+        match crate::utils::http::get_with_retry(&url, Duration::from_secs(30), None, &[]).await {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(content) = resp.text().await
                     && let Err(e) = storage_c.set_raw(&key_c, content.as_bytes()).await
@@ -250,8 +245,8 @@ async fn rebuild_version_manifest(
     }
 
     // Fetch + parse every manifest file concurrently (mirrors the Promise.allSettled
-    // in manifest.ts). Per-file network concurrency is capped by DOWNLOAD_SEMAPHORE
-    // inside fetch_manifest_content, so unbounded join_all can't overwhelm GitHub.
+    // in manifest.ts). fetch_manifest_content takes a shared download slot, so
+    // fan-out remains bounded instead of materializing every YAML at once.
     let fetched: Vec<Option<(String, Value)>> =
         future::join_all(files.iter().map(|path| async move {
             let filename = path.rsplit('/').next()?.to_string();
@@ -261,7 +256,7 @@ async fn rebuild_version_manifest(
         }))
         .await;
     // Whether at least one file was fetched — gates caching so an all-failed
-    // build (rate limit, outage) isn't pinned as an empty-shell manifest.
+    // build (raw outage or throttle) isn't pinned as an empty-shell manifest.
     let any_fetched = fetched.iter().any(|f| f.is_some());
 
     let mut entry = VersionManifest {

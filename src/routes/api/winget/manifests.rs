@@ -402,7 +402,7 @@ pub async fn handle_package_manifest(
                 let package_id = package_id.clone();
                 async move { build_version_manifest(&storage, &package_id, &version).await }
             })
-            .buffered(WINGET_MANIFEST_BUILD_CONCURRENCY)
+            .buffered(*crate::utils::concurrency::WINGET_MANIFEST_BUILD_CONCURRENCY)
             .collect()
             .await;
 

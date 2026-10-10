@@ -16,11 +16,17 @@ services:
       GITHUB_API_BASE_URL: ${GITHUB_API_BASE_URL:-https://api.github.com}
       CDNJS_API_BASE_URL: ${CDNJS_API_BASE_URL:-https://api.cdnjs.com}
 
-      # GitHub Token for WinGet manifest access (optional, increases API rate limit)
+      # GitHub Token for api.github.com only (optional; 60 -> 5,000 requests/hour).
       GITHUB_TOKEN: ${GITHUB_TOKEN}
 
-      # SQLite read pool for WinGet queries
-      NEXUS_DB_POOL_SIZE: ${NEXUS_DB_POOL_SIZE:-4}
+      # Resource limits are derived from visible CPU and effective memory when
+      # unset. Override only for unusual storage latency or deployment limits.
+      NEXUS_BUNDLE_CONCURRENCY: ${NEXUS_BUNDLE_CONCURRENCY:-}
+      NEXUS_DOWNLOAD_CONCURRENCY: ${NEXUS_DOWNLOAD_CONCURRENCY:-}
+      NEXUS_GITHUB_API_CONCURRENCY: ${NEXUS_GITHUB_API_CONCURRENCY:-}
+      NEXUS_DB_POOL_SIZE: ${NEXUS_DB_POOL_SIZE:-}
+      NEXUS_MANIFEST_BUILD_CONCURRENCY: ${NEXUS_MANIFEST_BUILD_CONCURRENCY:-}
+      NEXUS_STORAGE_WRITE_CONCURRENCY: ${NEXUS_STORAGE_WRITE_CONCURRENCY:-}
 
       # S3 Storage Configuration (optional, for persistent caching)
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}

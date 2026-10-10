@@ -1,5 +1,6 @@
 use anyhow::Result;
 use flate2::read::GzDecoder;
+use futures::StreamExt;
 use std::collections::HashSet;
 use std::io::Read;
 use std::sync::{LazyLock, Mutex};
@@ -88,8 +89,8 @@ pub fn extract_file_from_tgz(data: &[u8], filepath: &str) -> Option<Vec<u8>> {
 }
 
 pub async fn download_tarball(url: &str) -> Result<Vec<u8>, crate::utils::http::DownloadError> {
-    // Cap concurrent outbound fetches so a burst of cache misses doesn't trip
-    // npm's per-IP rate limit (429 / IP block).
+    // Each fetch materializes up to CDN_MAX_PACKAGE_SIZE in memory before
+    // extraction; this bounds the cold-start memory peak rather than npm traffic.
     let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
         .acquire()
         .await
@@ -293,32 +294,44 @@ async fn cache_package_entries(
     cache_base: &str,
     log_label: &str,
 ) -> Result<()> {
+    // Extraction, root derivation, and SRI hashing are all CPU-bound; run them
+    // as one blocking-pool job so async workers stay free during the whole
+    // compute phase instead of stalling on per-file SHA-256 calls.
     let data = tarball_data.to_vec();
-    let entries = tokio::task::spawn_blocking(move || extract_tgz(&data))
+    let cache_base_owned = cache_base.to_string();
+    let (files, file_list): (Vec<(String, Vec<u8>)>, Vec<CdnFileMeta>) =
+        tokio::task::spawn_blocking(move || {
+            let entries = extract_tgz(&data)?;
+            // Derive root from the first real entry (pax_global_header is tar
+            // metadata, not a package path), then keep only entries under it.
+            let root_dir = entries
+                .iter()
+                .find(|e| !e.name.starts_with("pax_global_header"))
+                .map(|e| e.name.split('/').next().unwrap_or("package").to_string())
+                .unwrap_or_else(|| "package".to_string());
+            let root_path = format!("{root_dir}/");
+            let mut files = Vec::new();
+            let mut file_list = Vec::new();
+            for entry in &entries {
+                if !entry.name.starts_with(&root_path) {
+                    continue;
+                }
+                let relative = entry.name[root_path.len()..].to_string();
+                let integrity = calculate_integrity(&entry.data);
+                files.push((
+                    format!("{}/{relative}", cache_base_owned),
+                    entry.data.clone(),
+                ));
+                file_list.push(CdnFileMeta {
+                    name: relative,
+                    size: entry.data.len() as u64,
+                    integrity: Some(integrity),
+                });
+            }
+            anyhow::Ok((files, file_list))
+        })
         .await
         .map_err(|e| anyhow::anyhow!("tarball extract task failed: {e}"))??;
-
-    // Derive root from the first real entry (pax_global_header is tar metadata,
-    // not a package path), then keep only entries under it.
-    let root_dir = entries
-        .iter()
-        .find(|e| !e.name.starts_with("pax_global_header"))
-        .map(|e| e.name.split('/').next().unwrap_or("package").to_string())
-        .unwrap_or_else(|| "package".to_string());
-    let root_path = format!("{root_dir}/");
-    let filtered: Vec<&TarEntry> = entries
-        .iter()
-        .filter(|e| e.name.starts_with(&root_path))
-        .collect();
-
-    let mut file_list: Vec<CdnFileMeta> = filtered
-        .iter()
-        .map(|e| CdnFileMeta {
-            name: e.name[root_path.len()..].to_string(),
-            size: e.data.len() as u64,
-            integrity: None,
-        })
-        .collect();
 
     let total_size: u64 = file_list.iter().map(|f| f.size).sum();
     if total_size > CDN_MAX_PACKAGE_SIZE {
@@ -342,14 +355,17 @@ async fn cache_package_entries(
 
     // PENDING slot guarantees no concurrent job caches the same package, so every
     // key here is fresh — write directly without a per-file get_raw pre-check.
-    for (i, entry) in filtered.iter().enumerate() {
-        let relative = &entry.name[root_path.len()..];
-        let key = format!("{cache_base}/{relative}");
-        storage
-            .set_raw(&key, &entry.data)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to cache {key}: {e}"))?;
-        file_list[i].integrity = Some(calculate_integrity(&entry.data));
+    // Writes are pure local IO (fs / S3 PUT), so a bounded parallel width avoids
+    // serializing hundreds of round-trips without stressing any upstream.
+    let mut writes = futures::stream::iter(files)
+        .map(|(key, data)| {
+            let storage = storage.clone();
+            async move { storage.set_raw(&key, &data).await.map(|_| key) }
+        })
+        .buffered(*crate::utils::concurrency::STORAGE_WRITE_CONCURRENCY);
+    while let Some(result) = writes.next().await {
+        result
+            .map_err(|e| anyhow::anyhow!("failed to cache package files for {cache_base}: {e}"))?;
     }
 
     storage

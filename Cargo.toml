@@ -52,6 +52,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Windows HeapAlloc default keeps it at the historical high-water mark).
 mimalloc = "0.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+
 [profile.release]
 lto = "fat"
 strip = true

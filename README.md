@@ -138,7 +138,11 @@ GET https://nexus.funish.net/api/winget/packages
 GET  https://nexus.funish.net/api/winget/manifestSearch?query=vscode&matchType=Fuzzy&maximumResults=5
 POST https://nexus.funish.net/api/winget/manifestSearch        # body: {"Query":{"KeyWord":"chrome","MatchType":"Substring"}}
 
+```
+
 `maximumResults` is the RESTSource parameter; the GET compatibility endpoint also accepts `limit` as an alias. Empty searches return HTTP 200 with `{"Data":[]}`.
+
+```bash
 
 # Package metadata & versions
 GET https://nexus.funish.net/api/winget/packages/{id}
@@ -212,6 +216,8 @@ docker run -d --name nexus -p 3000:3000 --env-file .env nexus
 
 All configuration is via environment variables (see [`.env.example`](./.env.example)):
 
+Resource limits are derived from the machine at startup: `cores` is the process-visible CPU count, and `memory` is the effective cgroup limit or OS total. Set an explicit override for unusual storage latency or deployment limits.
+
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3000` | HTTP listen port |
@@ -224,8 +230,13 @@ All configuration is via environment variables (see [`.env.example`](./.env.exam
 | `JSR_REGISTRY_URL` | `https://npm.jsr.io` | JSR npm-compatible registry base URL |
 | `GITHUB_API_BASE_URL` | `https://api.github.com` | GitHub REST API base URL (repo tags for version resolution) |
 | `CDNJS_API_BASE_URL` | `https://api.cdnjs.com` | cdnjs API base URL (library / version metadata) |
-| `NEXUS_DB_POOL_SIZE` | `min(cores, 4)` | SQLite read connection pool size for concurrent WinGet queries |
-| `GITHUB_TOKEN` | — | Optional; raises GitHub API rate limits for WinGet manifest/tree fetching |
+| `NEXUS_BUNDLE_CONCURRENCY` | `min(cores, memory / 8 / 50MB)` | Concurrent rolldown ESM bundles |
+| `NEXUS_DOWNLOAD_CONCURRENCY` | `memory / 4 / 50MB` | Concurrent cold-start downloads; local memory guardrail, not an upstream rate limit |
+| `NEXUS_GITHUB_API_CONCURRENCY` | `min(cores, 100)` | Concurrent `api.github.com` requests; raw content stays in the general download group |
+| `NEXUS_DB_POOL_SIZE` | `cores` | SQLite read connection pool size for concurrent WinGet queries |
+| `NEXUS_MANIFEST_BUILD_CONCURRENCY` | `cores` | Concurrent WinGet version-manifest builds |
+| `NEXUS_STORAGE_WRITE_CONCURRENCY` | `cores * 2` | Concurrent package-file writes while caching a tarball |
+| `GITHUB_TOKEN` | — | Optional; raises `api.github.com` quota from 60 to 5,000 requests/hour |
 | `S3_ACCESS_KEY_ID` | — | S3 access key (enables S3 storage when all S3_* are set) |
 | `S3_SECRET_ACCESS_KEY` | — | S3 secret key |
 | `S3_ENDPOINT` | — | S3 endpoint URL |

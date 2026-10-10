@@ -43,11 +43,7 @@ fn read_pool_size() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n| n >= 1)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().min(4))
-                .unwrap_or(4)
-        })
+        .unwrap_or_else(crate::utils::machine::cpu_count)
 }
 
 /// A cloneable handle to a pool of read-only connections over one immutable
@@ -350,8 +346,9 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
         headers.push(("If-None-Match", etag.as_str()));
     }
 
-    // The ~100MB+ msix download competes with all other outbound fetches; hold a
-    // download slot for the whole transfer so it cannot run alongside 50 others.
+    // The ~100MB+ msix download shares the cold-start response-memory budget;
+    // hold a slot for the whole transfer so it cannot coalesce with every other
+    // oversized fetch.
     let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
         .acquire()
         .await

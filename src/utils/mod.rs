@@ -8,4 +8,5 @@
 pub mod cache;
 pub mod concurrency;
 pub mod http;
+pub mod machine;
 pub mod singleflight;

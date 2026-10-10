@@ -14,7 +14,7 @@ Nexus is a Rust-based CDN service that proxies npm/JSR/GitHub packages, converts
 | Storage | **tokio::fs** + **rust-s3** | Local cache + S3-compatible (RustFS) for distributed deployments |
 | Tar | **tar** + **flate2** (zlib-rs backend) | .tgz extraction |
 | Hash | **sha2** | SHA-256 integrity (SRI) |
-| HTTP client | **reqwest** | npm registry + tarball fetching |
+| HTTP client | **reqwest** | Shared client for registry, archive, raw content, and API fetching |
 | Serialization | **serde** + **serde_json** | JSON handling |
 | Search | **strsim** | Fuzzy string matching for WinGet |
 | MIME | **mime_guess** | Content-Type detection |
@@ -27,47 +27,50 @@ src/
   main.rs                 # axum server entry; registers cdn + winget routers
   config.rs               # Environment variable configuration
   error.rs                # Unified error handling (thiserror AppError)
-  cdn/                    # /cdn/** — behavior aligned with jsDelivr
-    mod.rs                # pub fn router()
-    routes/               # Route handlers (one file per route)
+  routes/                 # URL-facing handlers; route registration stays in each router module
+    mod.rs
+    cdn/                  # /cdn/**
+      mod.rs
       npm.rs              # /cdn/npm/* (entry, listing, +esm, sub-path, org listing)
       jsr.rs              # /cdn/jsr/*
       gh.rs               # /cdn/gh/*
       cdnjs.rs            # /cdn/cdnjs/*
       wp.rs               # /cdn/wp/* (WordPress plugins/themes)
       combine.rs          # /cdn/combine/* (concatenate npm/gh files)
-    utils/                # Route-agnostic CDN logic
-      registry.rs         # npm/jsr/cdnjs/gh/org metadata fetching (TTL-cached)
-      resolve.rs          # Version resolution (node-semver, dist-tags, gh tags)
-      tarball.rs          # .tgz download, extraction, file/package caching
-      esm.rs              # ESM bundling via rolldown
-      entry.rs            # package.json entry resolution (default file, +esm priority)
-      minify.rs           # JS (oxc) / CSS (lightningcss) minification, .min synthesis
-      integrity.rs        # SHA-256 for Subresource Integrity
-      cache.rs            # TTL cache helpers (mtime expiry, cached_json)
-      singleflight.rs     # Dedup concurrent cache-miss requests (run_once)
-      listing.rs          # Directory listing JSON generation
-      mime.rs             # Extension → MIME type mapping
-      constants.rs        # Cache tiers + size limits
-  winget/                 # /api/winget/** — WinGet RESTSource spec
-    mod.rs                # pub fn router()
-    routes/               # WinGet REST handlers
-      catalog.rs          # manifestSearch, packages, information, package details
-      manifests.rs        # versions, installers, locales, packageManifests
-    utils/                # WinGet logic
-      db.rs               # SQLite index.db (rusqlite) + persisted search index
-      search.rs           # Fuzzy search (strsim)
-      queries.rs          # SQL queries for package/version lookup
-      manifest.rs         # Manifest resolution from GitHub tree
-      tree.rs             # GitHub tree SHA traversal
-      token.rs            # Continuation token encode/decode
-      response.rs         # WinGet REST response types + helpers
-      http.rs             # Shared reqwest client (connection pool)
-      constants.rs        # Manifest URLs, limits
+    api/
+      mod.rs
+      winget/             # /api/winget/** — WinGet RESTSource handlers
+        mod.rs
+        catalog.rs        # manifestSearch, packages, information, package details
+        manifests.rs      # versions, installers, locales, packageManifests
+  cdn/                    # Route-agnostic CDN domain logic and cache tiers
+    mod.rs
+    registry.rs           # npm/jsr/cdnjs/gh/org metadata fetching (TTL-cached)
+    resolve.rs            # Version resolution (node-semver, dist-tags, gh tags)
+    tarball.rs            # .tgz download, extraction, file/package caching
+    esm.rs                # ESM bundling via rolldown
+    entry.rs              # package.json entry resolution (default file, +esm priority)
+    minify.rs             # JS (oxc) / CSS (lightningcss) minification, .min synthesis
+    integrity.rs          # SHA-256 for Subresource Integrity
+    response.rs           # CDN response headers and conditional requests
+    listing.rs            # Directory listing JSON generation
+    mime.rs               # Extension → MIME type mapping
+    constants.rs          # Cache tiers + size limits
+  winget/                 # WinGet domain logic
+    mod.rs
+    db.rs                 # SQLite index.db (rusqlite) + persisted search index
+    search.rs             # Fuzzy search (strsim)
+    queries.rs            # SQL queries for package/version lookup
+    manifest.rs           # Manifest resolution and merging
+    tree.rs               # GitHub tree SHA traversal
+    rest.rs               # WinGet REST request/response types + helpers
+    token.rs              # Continuation token encode/decode
+    constants.rs          # Manifest URLs, limits
+  utils/                  # Cross-domain cache, HTTP, concurrency, and single-flight helpers
   storage/
     mod.rs                # Storage trait definition + CacheMeta
     fs.rs                 # Filesystem storage (tokio::fs)
-    s3.rs                 # S3 storage (aws-sdk-s3)
+    s3.rs                 # S3-compatible storage (rust-s3)
 ```
 
 ## Build & Run
@@ -120,9 +123,9 @@ Trait-based abstraction supporting multiple backends:
 #[async_trait]
 trait Storage {
     async fn get_raw(&self, key: &str) -> Option<Vec<u8>>;
-    async fn set_raw(&self, key: &str, data: &[u8]);
-    async fn get_meta(&self, key: &str) -> Option<Meta>;
-    async fn set_meta(&self, key: &str, meta: &Meta);
+    async fn set_raw(&self, key: &str, data: &[u8]) -> anyhow::Result<()>;
+    async fn get_meta(&self, key: &str) -> Option<CacheMeta>;
+    async fn set_meta(&self, key: &str, meta: &CacheMeta) -> anyhow::Result<()>;
 }
 ```
 
@@ -135,9 +138,9 @@ trait Storage {
 - **Default file**: `jsdelivr` > `browser` > `main` (JS), `style` (CSS); always served minified.
 - **`.min` synthesis**: requesting `foo.min.js` when only `foo.js` exists returns minified output (cached for reuse).
 - **Version fallback**: when the newest version matching a range lacks a file, older matching versions are tried (up to 2).
-- **Cache tiers**: exact version/commit → 1yr immutable; range/latest tag → 7d; branch → 12h.
+- **Cache tiers**: exact version/commit → 1yr immutable; range/latest tag → 7d browser / 12h shared cache; branch → 12h.
 - **HTML safety**: `.html`/`.htm` served as `text/plain`.
-- **Single-flight**: concurrent cache-miss requests for the same key share one download/bundle (`cdn::utils::singleflight::run_once`).
+- **Single-flight**: concurrent cache-miss requests for the same key share one download/bundle (`utils::singleflight::run_once`).
 
 ### WinGet Search
 
@@ -155,11 +158,19 @@ GET /cdn/npm/:package@version      → Specific version entry
 GET /cdn/npm/:package@version/+esm → Specific version ESM bundle
 GET /cdn/npm/:package@version/*    → Specific version sub-path
 GET /cdn/npm/@scope/:package...    → Scoped packages (same patterns)
+GET /cdn/jsr/:package/*path        → JSR file (proxy)
+GET /cdn/gh/:owner/:repo/*path     → Repository file (proxy)
+GET /cdn/cdnjs/:library/*path      → cdnjs file (proxy)
+GET /cdn/wp/:type/:name/*path      → WordPress asset (proxy)
 GET /cdn/combine/:paths            → Concatenate files (comma-separated npm/gh paths)
 
 GET /api/winget/packages           → Search packages
+GET /api/winget/information        → Server/source information
+GET|POST /api/winget/manifestSearch → Search manifests
 GET /api/winget/packages/:id       → Package details
 GET /api/winget/packages/:id/versions → Package versions
+GET .../installers, .../locales    → Per-version manifest slices
+GET /api/winget/packageManifests/:id → Full merged manifest
 ```
 
 ## Naming Conventions

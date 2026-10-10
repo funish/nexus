@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 
 use crate::storage::SharedStorage;
 use crate::utils::cache::{cache_fresh, set_mtime};
-use crate::utils::concurrency::DOWNLOAD_SEMAPHORE;
+use crate::utils::concurrency::GITHUB_API_SEMAPHORE;
 
 use super::constants::*;
 
@@ -41,10 +41,10 @@ struct TreeResponse {
 }
 
 /// Fetch a GitHub tree by SHA or branch (mirrors getGitHubTree). Goes through
-/// the shared retry-capable client (429/5xx backoff + GITHUB_TOKEN) and the
-/// download semaphore, so the GitHub budget is respected.
+/// the dedicated API semaphore and token-authenticated retry client because
+/// only api.github.com consumes GitHub's hourly quota.
 async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse> {
-    let _permit = DOWNLOAD_SEMAPHORE.acquire().await.unwrap();
+    let _permit = GITHUB_API_SEMAPHORE.acquire().await.unwrap();
     let url = format!(
         "{WINGET_GITHUB_API_BASE}/repos/{}/git/trees/{tree_sha}{}",
         crate::config::winget_github_repo(),

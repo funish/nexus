@@ -100,6 +100,12 @@ pub async fn fetch_github_tags(
                 "{}/repos/{owner}/{repo}/tags?per_page=100",
                 github_api_base()
             );
+            // api.github.com has a hard 60 req/h unauthenticated limit — share
+            // the dedicated API semaphore instead of the general pool.
+            let _permit = crate::utils::concurrency::GITHUB_API_SEMAPHORE
+                .acquire()
+                .await
+                .unwrap();
             let resp = get_with_retry(
                 &url,
                 FETCH_TIMEOUT,

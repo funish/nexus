@@ -23,6 +23,27 @@ type Done = broadcast::Sender<()>;
 
 static PENDING: LazyLock<DashMap<String, Done>> = LazyLock::new(DashMap::new);
 
+/// Whether a leader is currently running `compute` for `key`. Callers that
+/// would spawn a detached refresh task can skip the spawn when one is already
+/// in flight — the running leader's result will refresh the same cache entry.
+pub fn is_pending(key: &str) -> bool {
+    PENDING.contains_key(key)
+}
+
+/// Removes the pending entry and releases waiters on drop, so a panic or task
+/// cancellation in the leader's compute cannot strand followers forever.
+struct LeaderGuard {
+    key: String,
+}
+
+impl Drop for LeaderGuard {
+    fn drop(&mut self) {
+        if let Some((_, tx)) = PENDING.remove(&self.key) {
+            let _ = tx.send(());
+        }
+    }
+}
+
 /// Run `compute` at most once concurrently for `key`. The leader executes it;
 /// followers wait for the leader to finish, then return (callers re-read storage).
 pub async fn run_once<F, Fut>(key: &str, compute: F)
@@ -42,17 +63,11 @@ where
     };
 
     if is_leader {
+        let guard = LeaderGuard {
+            key: key.to_string(),
+        };
         compute().await;
-        // Signal every subscriber. `send` fails only when there are no receivers,
-        // which is fine (no one is waiting). The buffered message lets late
-        // subscribers — those who grabbed the receiver after this point but before
-        // the entry is removed — drain it instead of blocking forever.
-        if let Some((_, tx)) = PENDING.remove(key) {
-            let _ = tx.send(());
-            // tx drops here, closing the channel; receivers that never got a
-            // message (impossible here, since send succeeded above) would get
-            // a RecvError::Closed.
-        }
+        drop(guard);
     } else {
         // Wait for the leader's signal. Errors only occur if the leader panicked
         // and dropped the sender without sending — treat that the same as "done"

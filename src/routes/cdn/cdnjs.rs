@@ -185,8 +185,14 @@ async fn serve_cdnjs_root_file(ctx: &CdnjsCtx<'_>) -> Result<Response, AppError>
         .as_str()
         .ok_or_else(|| AppError::not_found("No default filename"))?
         .to_string();
-    let original =
-        get_cdnjs_file(ctx.storage, ctx.library, ctx.version, &filename, ctx.cache_base).await?;
+    let original = get_cdnjs_file(
+        ctx.storage,
+        ctx.library,
+        ctx.version,
+        &filename,
+        ctx.cache_base,
+    )
+    .await?;
     // jsDelivr: the default file is always minified (see npm route).
     let file_data = minified_entry(ctx.storage, ctx.cache_base, &filename, &original).await;
     Ok(file_response(
@@ -200,9 +206,10 @@ async fn serve_cdnjs_root_file(ctx: &CdnjsCtx<'_>) -> Result<Response, AppError>
 
 /// Library root with a trailing slash: list all files for the resolved version.
 async fn serve_cdnjs_root_listing(ctx: &CdnjsCtx<'_>) -> Result<Response, AppError> {
-    let files = ensure_cdnjs_file_list_cached(ctx.storage, ctx.library, ctx.version, ctx.cache_base)
-        .await
-        .map_err(|_| AppError::not_found("Version not found"))?;
+    let files =
+        ensure_cdnjs_file_list_cached(ctx.storage, ctx.library, ctx.version, ctx.cache_base)
+            .await
+            .map_err(|_| AppError::not_found("Version not found"))?;
     let listing = CdnPackageListing {
         name: Some(ctx.library.to_string()),
         version: Some(ctx.version.to_string()),
@@ -315,7 +322,9 @@ async fn get_cdnjs_file(
             "https://raw.githubusercontent.com/cdnjs/cdnjs/refs/heads/master/ajax/libs/{fetch_library}/{fetch_version}/{fetch_filepath}"
         );
         if let Ok(data) = download_tarball(&url).await {
-            fetch_storage.set_raw(&fetch_key, &data).await;
+            if let Err(e) = fetch_storage.set_raw(&fetch_key, &data).await {
+                tracing::warn!("Failed to cache cdnjs file {fetch_key}: {e}");
+            }
             // Warm the version file list only after the leader caches the file, so
             // followers do not launch duplicate warming requests.
             let s = fetch_storage.clone();
@@ -370,7 +379,7 @@ async fn ensure_cdnjs_file_list_cached(
                         .collect()
                 })
                 .unwrap_or_default();
-            fetch_storage
+            if let Err(e) = fetch_storage
                 .set_meta(
                     &fetch_base,
                     &CacheMeta {
@@ -387,7 +396,10 @@ async fn ensure_cdnjs_file_list_cached(
                         ..Default::default()
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!("Failed to cache cdnjs file list {fetch_base}: {e}");
+            }
         }
     })
     .await;

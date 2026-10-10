@@ -77,8 +77,19 @@ pub async fn handle_wp(
         (svn_url, jsdelivr_url, cache_key, is_trunk)
     };
 
-    // Check cache first.
-    if let Some(cached) = storage.get_raw(&cache_key).await {
+    // Check cache first. Trunk is a moving ref — apply the branch-tier storage
+    // TTL (12h) so content updates are picked up; tags are immutable.
+    let cache_valid = if is_trunk {
+        crate::utils::cache::cache_fresh(
+            &storage,
+            &cache_key,
+            crate::cdn::constants::CDN_MUTABLE_REF_TTL_SECS,
+        )
+        .await
+    } else {
+        storage.get_raw(&cache_key).await.is_some()
+    };
+    if cache_valid && let Some(cached) = storage.get_raw(&cache_key).await {
         return Ok(file_response(&svn_url, &cached, is_trunk, &headers));
     }
 
@@ -88,8 +99,19 @@ pub async fn handle_wp(
     let fetch_key = cache_key.clone();
     let fetch_svn_url = svn_url.clone();
     let fetch_jsdelivr_url = jsdelivr_url.clone();
+    let fetch_is_trunk = is_trunk;
     crate::utils::singleflight::run_once(&cache_key, move || async move {
-        if fetch_storage.get_raw(&fetch_key).await.is_some() {
+        let still_valid = if fetch_is_trunk {
+            crate::utils::cache::cache_fresh(
+                &fetch_storage,
+                &fetch_key,
+                crate::cdn::constants::CDN_MUTABLE_REF_TTL_SECS,
+            )
+            .await
+        } else {
+            fetch_storage.get_raw(&fetch_key).await.is_some()
+        };
+        if still_valid {
             return;
         }
         let data = match try_fetch(&fetch_svn_url).await {
@@ -97,7 +119,11 @@ pub async fn handle_wp(
             None => try_fetch(&fetch_jsdelivr_url).await,
         };
         if let Some(data) = data {
-            fetch_storage.set_raw(&fetch_key, &data).await;
+            if fetch_storage.set_raw(&fetch_key, &data).await.is_ok() {
+                crate::utils::cache::set_mtime(&fetch_storage, &fetch_key).await;
+            } else {
+                tracing::warn!("Failed to cache wp asset {fetch_key}");
+            }
         }
     })
     .await;

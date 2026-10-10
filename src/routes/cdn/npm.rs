@@ -31,7 +31,9 @@ static ORG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^@([^/]+)/?$").un
 /// Parsed `/cdn/npm/{path}` — either an org listing (`@scope` / `@scope/`) or a
 /// concrete package with an optional version and sub-path.
 enum ParsedNpmPath {
-    OrgListing { scope: String },
+    OrgListing {
+        scope: String,
+    },
     Package {
         name: String,
         version: String,
@@ -168,7 +170,7 @@ pub async fn handle_npm(
     } else {
         CDN_CACHE_TAG
     };
-    let cached_meta = is_package_cached(&storage, &cache_base, cacheable).await;
+    let cached_meta = is_package_cached(&storage, &cache_base).await;
     let is_cached = cached_meta.is_some();
 
     let ctx = NpmCtx {
@@ -319,23 +321,31 @@ async fn serve_entry_file(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
             .ok_or_else(|| AppError::not_found("Entry file not found"))?;
         (entry_file, original)
     } else {
-        let bytes = download_tarball(ctx.tarball_url)
-            .await
-            .map_err(|e| AppError::bad_gateway(e.to_string()))?;
-        let pkg: serde_json::Value = extract_file_from_tgz(&bytes, "package.json")
-            .and_then(|d| serde_json::from_slice(&d).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let entry_candidates = resolve_default_file(&pkg)
-            .or_else(|| resolve_style_file(&pkg))
-            .into_iter()
-            .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()));
-        let mut found = None;
-        for cand in entry_candidates {
-            if let Some(data) = extract_file_from_tgz(&bytes, &cand) {
-                found = Some((cand, data));
-                break;
+        let bytes = match download_tarball(ctx.tarball_url).await {
+            Ok(bytes) => bytes,
+            Err(crate::utils::http::DownloadError::NotFound) => {
+                return Err(AppError::not_found("Tarball not found"));
             }
-        }
+            Err(e) => return Err(AppError::bad_gateway(e.to_string())),
+        };
+        // Each candidate lookup re-inflates the whole gzip stream, so the
+        // package.json read plus the fallback search all run on the blocking
+        // pool instead of stalling an async worker.
+        let bytes_for_parse = bytes.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            let pkg: serde_json::Value = extract_file_from_tgz(&bytes_for_parse, "package.json")
+                .and_then(|d| serde_json::from_slice(&d).ok())
+                .unwrap_or(serde_json::Value::Null);
+            resolve_default_file(&pkg)
+                .or_else(|| resolve_style_file(&pkg))
+                .into_iter()
+                .chain(ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()))
+                .find_map(|cand| {
+                    extract_file_from_tgz(&bytes_for_parse, &cand).map(|data| (cand, data))
+                })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("entry extract task failed: {e}"))?;
         let (entry_file, original) =
             found.ok_or_else(|| AppError::not_found("Entry file not found"))?;
         let s = ctx.storage.clone();
@@ -375,6 +385,7 @@ async fn serve_subpath(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
         &format!("{}/{}", ctx.cache_base, ctx.filepath),
         None,
         warm,
+        None,
     )
     .await
     {
@@ -409,6 +420,7 @@ async fn serve_subpath(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
                 ctx.cache_control,
                 None,
                 Some(&ctx.resolved.version),
+                None,
             )
             .await?
             {
@@ -430,6 +442,7 @@ async fn serve_subpath(ctx: &NpmCtx<'_>) -> Result<Response, AppError> {
                             tb,
                             ctx.filepath,
                             &format!("{cand_base}/{}", ctx.filepath),
+                            None,
                             None,
                             None,
                         )

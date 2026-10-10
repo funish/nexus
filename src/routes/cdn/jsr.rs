@@ -58,7 +58,7 @@ pub async fn handle_jsr(
     // Immutable only for an exact-version request; latest/range aliases resolve to an
     // exact version but can move, so they use the short tag TTL (jsDelivr rule).
     let cacheable = resolved.version == version;
-    let cached_meta = is_package_cached(&storage, &cache_base, cacheable).await;
+    let cached_meta = is_package_cached(&storage, &cache_base).await;
     let is_cached = cached_meta.is_some();
 
     let entry_file = resolve_jsr_entry(&metadata);
@@ -109,6 +109,7 @@ pub async fn handle_jsr(
             &format!("{cache_base}/{entry_file}"),
             None,
             warm,
+            None,
         )
         .await
         .map_err(|_| AppError::not_found(format!("Entry file not found: {entry_file}")))?;
@@ -133,6 +134,7 @@ pub async fn handle_jsr(
         &format!("{cache_base}/{filepath}"),
         None,
         warm,
+        None,
     )
     .await
     {

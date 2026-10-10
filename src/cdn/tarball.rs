@@ -87,7 +87,7 @@ pub fn extract_file_from_tgz(data: &[u8], filepath: &str) -> Option<Vec<u8>> {
     None
 }
 
-pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
+pub async fn download_tarball(url: &str) -> Result<Vec<u8>, crate::utils::http::DownloadError> {
     // Cap concurrent outbound fetches so a burst of cache misses doesn't trip
     // npm's per-IP rate limit (429 / IP block).
     let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
@@ -95,52 +95,15 @@ pub async fn download_tarball(url: &str) -> Result<Vec<u8>> {
         .await
         .unwrap();
 
-    let mut resp = crate::utils::http::get_with_retry(
+    // download_to_vec retries retryable statuses AND mid-body transport
+    // failures from scratch, so a 50MB tarball that drops mid-stream gets a
+    // second full attempt instead of failing the request.
+    crate::utils::http::download_to_vec(
         url,
         Duration::from_secs(CDN_FETCH_TIMEOUT_SECS),
-        None,
-        &[],
+        CDN_MAX_PACKAGE_SIZE,
     )
     .await
-    .map_err(|e| {
-        let timed_out = e
-            .downcast_ref::<::reqwest::Error>()
-            .is_some_and(|re| re.is_timeout());
-        if timed_out {
-            anyhow::anyhow!("Tarball download timed out")
-        } else {
-            anyhow::anyhow!("Failed to download tarball: {e}")
-        }
-    })?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("Failed to download tarball: {}", resp.status());
-    }
-
-    // Reject before reading the body when the server declares an oversized
-    // Content-Length, then stream with a hard cap so a missing/lying header
-    // (or a huge gh repo tarball) can't exhaust memory or bandwidth. The
-    // post-extract CDN_MAX_PACKAGE_SIZE check in cache_package_from_tarball
-    // still guards the *unpacked* size (tarballs compress).
-    if let Some(len) = resp.content_length()
-        && len > CDN_MAX_PACKAGE_SIZE
-    {
-        anyhow::bail!(
-            "Tarball exceeds {} byte limit (declared {len})",
-            CDN_MAX_PACKAGE_SIZE
-        );
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await? {
-        if body.len() + chunk.len() > CDN_MAX_PACKAGE_SIZE as usize {
-            anyhow::bail!(
-                "Tarball exceeded {} byte limit while streaming",
-                CDN_MAX_PACKAGE_SIZE
-            );
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
 }
 
 pub async fn extract_file_from_tarball(
@@ -150,8 +113,11 @@ pub async fn extract_file_from_tarball(
     cache_key: &str,
     direct_url: Option<&str>,
     warm: Option<(&str, &str)>,
+    ttl_secs: Option<i64>,
 ) -> Result<Vec<u8>> {
-    if let Some(cached) = storage.get_raw(cache_key).await {
+    if cached_entry_valid(storage, cache_key, ttl_secs).await
+        && let Some(cached) = storage.get_raw(cache_key).await
+    {
         return Ok(cached);
     }
 
@@ -166,20 +132,29 @@ pub async fn extract_file_from_tarball(
         let direct_url = direct_url.map(|u| u.to_string());
         let cache_key = cache_key.to_string();
         let warm = warm.clone();
+        let ttl_secs_clone = ttl_secs;
         async move {
             // Re-check: another leader may have just cached it.
-            if storage.get_raw(&cache_key).await.is_some() {
+            if cached_entry_valid(&storage, &cache_key, ttl_secs_clone).await {
                 return;
             }
             if let Some(url) = direct_url.as_deref() {
                 if let Some(data) = try_fetch(url).await {
-                    storage.set_raw(&cache_key, &data).await;
+                    if storage.set_raw(&cache_key, &data).await.is_ok() {
+                        crate::utils::cache::set_mtime(&storage, &cache_key).await;
+                    } else {
+                        warn!("Failed to cache {cache_key}");
+                    }
                     return;
                 }
                 if url.contains("/main/") {
                     let master_url = url.replace("/main/", "/master/");
                     if let Some(data) = try_fetch(&master_url).await {
-                        storage.set_raw(&cache_key, &data).await;
+                        if storage.set_raw(&cache_key, &data).await.is_ok() {
+                            crate::utils::cache::set_mtime(&storage, &cache_key).await;
+                        } else {
+                            warn!("Failed to cache {cache_key}");
+                        }
                         return;
                     }
                     if let Ok(mut url_obj) = url::Url::parse(&url.replace(
@@ -192,26 +167,52 @@ pub async fn extract_file_from_tarball(
                         }
                         url_obj.set_path(&parts.join("/"));
                         if let Some(data) = try_fetch(url_obj.as_str()).await {
-                            storage.set_raw(&cache_key, &data).await;
+                            if storage.set_raw(&cache_key, &data).await.is_ok() {
+                                crate::utils::cache::set_mtime(&storage, &cache_key).await;
+                            } else {
+                                warn!("Failed to cache {cache_key}");
+                            }
                             return;
                         }
                     }
                 }
             }
-            if let Ok(tarball) = download_tarball(&tarball_url).await {
-                if let Some(data) = extract_file_from_tgz(&tarball, &filepath) {
-                    storage.set_raw(&cache_key, &data).await;
+            match download_tarball(&tarball_url).await {
+                Ok(tarball) => {
+                    // Gzip inflate scans the whole archive; offload to the blocking
+                    // pool so the async worker stays responsive during the scan.
+                    let filepath = filepath.clone();
+                    let tarball_for_extract = tarball.clone();
+                    let extracted = tokio::task::spawn_blocking(move || {
+                        extract_file_from_tgz(&tarball_for_extract, &filepath)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(data) = extracted {
+                        if storage.set_raw(&cache_key, &data).await.is_ok() {
+                            crate::utils::cache::set_mtime(&storage, &cache_key).await;
+                        } else {
+                            warn!("Failed to cache {cache_key}");
+                        }
+                    }
+                    // Warm the full package in the background reusing these bytes, so a
+                    // follow-up request for another file (or a directory listing) is served
+                    // from cache without re-downloading the tarball. Only the download path
+                    // has bytes to reuse; the direct_url fast path above never fetched the
+                    // tarball, so gh (which uses direct_url) warms via its own spawn.
+                    if let Some((base, label)) = warm {
+                        let storage = storage.clone();
+                        tokio::spawn(async move {
+                            let _ =
+                                cache_package_from_bytes(&storage, tarball, &base, &label).await;
+                        });
+                    }
                 }
-                // Warm the full package in the background reusing these bytes, so a
-                // follow-up request for another file (or a directory listing) is served
-                // from cache without re-downloading the tarball. Only the download path
-                // has bytes to reuse; the direct_url fast path above never fetched the
-                // tarball, so gh (which uses direct_url) warms via its own spawn.
-                if let Some((base, label)) = warm {
-                    let storage = storage.clone();
-                    tokio::spawn(async move {
-                        let _ = cache_package_from_bytes(&storage, tarball, &base, &label).await;
-                    });
+                // Transient upstream faults must not be silently mapped to a
+                // not-found below; log them so misrouted 404s are diagnosable.
+                Err(e) => {
+                    warn!("Tarball fallback failed for {cache_key}: {e}");
                 }
             }
         }
@@ -224,46 +225,62 @@ pub async fn extract_file_from_tarball(
         .ok_or_else(|| anyhow::anyhow!("File not found: {filepath}"))
 }
 
-/// Returns the cached package meta (with its file list) when the package is
-/// cached and `cacheable`, else `None`. Callers use `.is_some()` as the cached
-/// boolean and can reuse `files[].integrity` as an ETag to avoid re-hashing the
-/// body on every request.
-pub async fn is_package_cached(
-    storage: &SharedStorage,
-    cache_base: &str,
-    cacheable: bool,
-) -> Option<CacheMeta> {
-    if !cacheable {
-        return None;
-    }
+/// Returns the cached package meta (with its file list) when the exact-version
+/// cache entry exists, else `None`. Storage presence is independent of the HTTP
+/// cache policy: a `latest`/range alias resolving to a cached exact version is a
+/// storage hit even though the response must use the short alias Cache-Control.
+/// Callers reuse `files[].integrity` as an ETag to avoid re-hashing the body.
+pub async fn is_package_cached(storage: &SharedStorage, cache_base: &str) -> Option<CacheMeta> {
     let meta = storage.get_meta(cache_base).await?;
     (meta.files.is_some()).then_some(meta)
 }
 
+/// Outcome of attempting to claim a package cache job.
+enum CacheSlot {
+    /// This caller owns the job; the guard releases PENDING on drop.
+    Owned(PendingGuard),
+    /// Already cached (files present) or recently skipped — nothing to do.
+    Cached,
+    /// Another task is currently caching this package.
+    Busy,
+}
+
 /// Skip if already cached (files present) or recently skipped; otherwise claim the
-/// PENDING slot to dedup concurrent cache jobs. Returns a guard whose drop releases
-/// the slot, or None when nothing should be done.
-async fn try_acquire_cache_slot(storage: &SharedStorage, cache_base: &str) -> Option<PendingGuard> {
+/// PENDING slot to dedup concurrent cache jobs.
+async fn try_acquire_cache_slot(storage: &SharedStorage, cache_base: &str) -> CacheSlot {
     if let Some(meta) = storage.get_meta(cache_base).await {
         if meta.files.is_some() {
-            return None;
+            return CacheSlot::Cached;
         }
         if let Some(skipped) = meta.skipped_at {
             let now = now_millis();
             if now - skipped < CDN_SKIP_TTL_MS {
-                return None;
+                return CacheSlot::Cached;
             }
         }
     }
 
     let mut set = PENDING.lock().unwrap();
     if set.contains(cache_base) {
-        return None;
+        return CacheSlot::Busy;
     }
     set.insert(cache_base.to_string());
-    Some(PendingGuard {
+    CacheSlot::Owned(PendingGuard {
         key: cache_base.to_string(),
     })
+}
+
+/// Whether a cached raw entry may be used. `ttl_secs` applies the mtime-based
+/// freshness check (mutable refs such as branches/tags); `None` trusts presence.
+async fn cached_entry_valid(
+    storage: &SharedStorage,
+    cache_key: &str,
+    ttl_secs: Option<i64>,
+) -> bool {
+    match ttl_secs {
+        Some(ttl) => crate::utils::cache::cache_fresh(storage, cache_key, ttl).await,
+        None => storage.get_raw(cache_key).await.is_some(),
+    }
 }
 
 /// Extract every file from an already-obtained tarball into storage and write the
@@ -276,7 +293,10 @@ async fn cache_package_entries(
     cache_base: &str,
     log_label: &str,
 ) -> Result<()> {
-    let entries = extract_tgz(tarball_data)?;
+    let data = tarball_data.to_vec();
+    let entries = tokio::task::spawn_blocking(move || extract_tgz(&data))
+        .await
+        .map_err(|e| anyhow::anyhow!("tarball extract task failed: {e}"))??;
 
     // Derive root from the first real entry (pax_global_header is tar metadata,
     // not a package path), then keep only entries under it.
@@ -315,7 +335,8 @@ async fn cache_package_entries(
                     ..Default::default()
                 },
             )
-            .await;
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to record skip marker for {cache_base}: {e}"))?;
         return Ok(());
     }
 
@@ -324,7 +345,10 @@ async fn cache_package_entries(
     for (i, entry) in filtered.iter().enumerate() {
         let relative = &entry.name[root_path.len()..];
         let key = format!("{cache_base}/{relative}");
-        storage.set_raw(&key, &entry.data).await;
+        storage
+            .set_raw(&key, &entry.data)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to cache {key}: {e}"))?;
         file_list[i].integrity = Some(calculate_integrity(&entry.data));
     }
 
@@ -336,7 +360,7 @@ async fn cache_package_entries(
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
 
     Ok(())
 }
@@ -347,15 +371,20 @@ pub async fn cache_package_from_tarball(
     cache_base: &str,
     log_label: &str,
 ) -> Result<()> {
-    let _guard = match try_acquire_cache_slot(storage, cache_base).await {
+    let _guard = match await_cache_slot(storage, cache_base).await {
         Some(g) => g,
         None => return Ok(()),
     };
 
     let tarball_data = match download_tarball(tarball_url).await {
         Ok(data) => data,
-        Err(e) => {
-            error!("Failed to download tarball for {log_label}: {e}");
+        // Deterministic misses get the short skipped_at negative cache; the
+        // empty listing stays a 200 for compatibility.
+        Err(
+            e @ (crate::utils::http::DownloadError::NotFound
+            | crate::utils::http::DownloadError::TooLarge),
+        ) => {
+            warn!("Tarball unavailable for {log_label}: {e}");
             storage
                 .set_meta(
                     cache_base,
@@ -364,8 +393,18 @@ pub async fn cache_package_from_tarball(
                         ..Default::default()
                     },
                 )
-                .await;
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to record skip marker for {cache_base}: {e}")
+                })?;
             return Ok(());
+        }
+        // Transient upstream faults (429/5xx/transport) must not be frozen into
+        // a negative cache — surface them so listings return 502 and the next
+        // request retries.
+        Err(e) => {
+            error!("Failed to download tarball for {log_label}: {e}");
+            return Err(anyhow::anyhow!("{e}"));
         }
     };
 
@@ -382,7 +421,7 @@ pub async fn cache_package_from_bytes(
     cache_base: &str,
     log_label: &str,
 ) -> Result<()> {
-    let _guard = match try_acquire_cache_slot(storage, cache_base).await {
+    let _guard = match await_cache_slot(storage, cache_base).await {
         Some(g) => g,
         None => return Ok(()),
     };
@@ -390,37 +429,42 @@ pub async fn cache_package_from_bytes(
     cache_package_entries(storage, &tarball_data, cache_base, log_label).await
 }
 
+/// Claim a package cache slot, waiting out a concurrent job instead of skipping.
+/// Previously, concurrent cold requests saw `Busy` and returned immediately,
+/// reading an empty listing or failing `+esm` before the leader had written the
+/// meta. Waits up to two minutes (a 50MB tarball download on a slow link), then
+/// degrades to the old skip behavior so a stuck leader cannot hold requests.
+async fn await_cache_slot(storage: &SharedStorage, cache_base: &str) -> Option<PendingGuard> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        match try_acquire_cache_slot(storage, cache_base).await {
+            CacheSlot::Owned(guard) => return Some(guard),
+            CacheSlot::Cached => return None,
+            CacheSlot::Busy => {
+                if tokio::time::Instant::now() >= deadline {
+                    return None;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
 pub async fn try_fetch(url: &str) -> Option<Vec<u8>> {
     let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
         .acquire()
         .await
         .ok()?;
-    let mut resp = crate::utils::http::get_with_retry(
+    // Same streaming size cap and mid-body retry as download_tarball: wp zips
+    // and gh raw files flow through here and either can be oversized or drop
+    // mid-transfer. Fail-open to the caller's fallback URL on any error.
+    crate::utils::http::download_to_vec(
         url,
         Duration::from_secs(CDN_FETCH_TIMEOUT_SECS),
-        None,
-        &[],
+        CDN_MAX_PACKAGE_SIZE,
     )
     .await
-    .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    // Same streaming size cap as download_tarball: wp zips and gh raw files
-    // flow through here and either can be oversized.
-    if let Some(len) = resp.content_length()
-        && len > CDN_MAX_PACKAGE_SIZE
-    {
-        return None;
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.ok()? {
-        if body.len() + chunk.len() > CDN_MAX_PACKAGE_SIZE as usize {
-            return None;
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Some(body)
+    .ok()
 }
 
 fn now_millis() -> u64 {

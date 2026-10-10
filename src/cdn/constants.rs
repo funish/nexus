@@ -41,3 +41,7 @@ pub const CDN_CACHE_TAG: &str = "public, max-age=604800, s-maxage=43200"; // tag
 pub const CDN_CACHE_BRANCH: &str = "public, max-age=43200, s-maxage=43200"; // branch ref, 12h (jsDelivr)
 pub const CDN_SKIP_TTL_MS: u64 = 600_000;
 pub const CDN_MAX_PACKAGE_SIZE: u64 = 50 * 1024 * 1024;
+/// Server-side storage TTL for mutable refs (branches, re-pointable tags): 12h,
+/// matching the CDN_CACHE_BRANCH edge TTL. Immutable exact versions/commits skip
+/// this check entirely.
+pub const CDN_MUTABLE_REF_TTL_SECS: i64 = 43_200;

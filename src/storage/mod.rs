@@ -25,9 +25,11 @@ pub struct CdnFileMeta {
 #[async_trait]
 pub trait Storage: Send + Sync {
     async fn get_raw(&self, key: &str) -> Option<Vec<u8>>;
-    async fn set_raw(&self, key: &str, data: &[u8]);
+    /// Writes must report failure: a silently-dropped write followed by a fresh
+    /// mtime or file-list meta would pin an empty entry until its TTL expires.
+    async fn set_raw(&self, key: &str, data: &[u8]) -> anyhow::Result<()>;
     async fn get_meta(&self, key: &str) -> Option<CacheMeta>;
-    async fn set_meta(&self, key: &str, meta: &CacheMeta);
+    async fn set_meta(&self, key: &str, meta: &CacheMeta) -> anyhow::Result<()>;
 }
 
 pub type SharedStorage = Arc<dyn Storage>;

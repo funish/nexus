@@ -28,11 +28,47 @@ const VIRTUAL_PREFIX: &str = "virtual://";
 /// Node builtin modules exposed as bare specifiers (without the `node:` prefix).
 /// These can never resolve to an npm package, so they stay external as-is.
 const NODE_BUILTINS: &[&str] = &[
-    "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants",
-    "crypto", "dgram", "diagnostics_channel", "dns", "domain", "events", "fs", "http", "http2",
-    "https", "inspector", "module", "net", "os", "path", "perf_hooks", "process", "punycode",
-    "querystring", "readline", "repl", "stream", "string_decoder", "timers", "tls", "trace_events",
-    "tty", "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib",
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib",
 ];
 
 #[derive(Clone)]
@@ -67,7 +103,11 @@ pub async fn bundle_esm_package(
                 return;
             }
             match build_bundle(&storage, &opts).await {
-                Ok(code) => storage.set_raw(&key, code.as_bytes()).await,
+                Ok(code) => {
+                    if let Err(e) = storage.set_raw(&key, code.as_bytes()).await {
+                        tracing::warn!("Failed to cache ESM bundle {key}: {e}");
+                    }
+                }
                 Err(e) => tracing::warn!(
                     "ESM bundle failed for {}@{}: {e}",
                     opts.package_name,
@@ -139,7 +179,11 @@ async fn build_bundle(storage: &SharedStorage, options: &EsmBundleOptions) -> Re
     let entry = [resolve_esm_entry(&pkg_json)]
         .into_iter()
         .flatten()
-        .chain(crate::cdn::entry::ENTRY_FALLBACKS.iter().map(|s| (*s).to_string()))
+        .chain(
+            crate::cdn::entry::ENTRY_FALLBACKS
+                .iter()
+                .map(|s| (*s).to_string()),
+        )
         .chain(std::iter::once("index.json".to_string()))
         .find_map(|cand| resolve_in_files(&files, &cand))
         .ok_or_else(|| {
@@ -305,7 +349,9 @@ impl StoragePlugin {
         let importer = importer.strip_prefix(VIRTUAL_PREFIX)?;
         let dir = importer.rsplit_once('/').map(|(d, _)| d)?;
         let target = join_virtual(dir, spec);
-        let rest = target.strip_prefix(&self.cache_base)?.trim_start_matches('/');
+        let rest = target
+            .strip_prefix(&self.cache_base)?
+            .trim_start_matches('/');
         resolve_in_files(&self.files, rest)
             .map(|cand| format!("{VIRTUAL_PREFIX}/{}/{cand}", self.cache_base))
     }
@@ -429,14 +475,20 @@ impl Plugin for StoragePlugin {
                  Object.prototype.hasOwnProperty.call(m, 'module.exports') \
                  ? m['module.exports'] : (m.default ?? m);"
             );
-            return Ok(Some(HookLoadOutput { code: code.into(), ..Default::default() }));
+            return Ok(Some(HookLoadOutput {
+                code: code.into(),
+                ..Default::default()
+            }));
         }
 
         if let Some(key) = args.id.strip_prefix(VIRTUAL_PREFIX)
             && let Some(data) = self.storage.get_raw(key).await
         {
             let code = String::from_utf8_lossy(&data);
-            return Ok(Some(HookLoadOutput { code: code.into_owned().into(), ..Default::default() }));
+            return Ok(Some(HookLoadOutput {
+                code: code.into_owned().into(),
+                ..Default::default()
+            }));
         }
         Ok(None)
     }

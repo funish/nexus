@@ -29,7 +29,7 @@ pub async fn cache_fresh(storage: &SharedStorage, key: &str, ttl_secs: i64) -> b
 
 /// Stamp `key`'s mtime to now (mark the entry fresh).
 pub async fn set_mtime(storage: &SharedStorage, key: &str) {
-    storage
+    if let Err(e) = storage
         .set_meta(
             key,
             &CacheMeta {
@@ -37,7 +37,10 @@ pub async fn set_mtime(storage: &SharedStorage, key: &str) {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!("Failed to stamp mtime for {key}: {e}");
+    }
 }
 
 /// Refresh a cached JSON value through single-flight. The leader performs the
@@ -64,8 +67,12 @@ where
         if let Ok(v) = fetch.await
             && let Ok(bytes) = serde_json::to_vec(&v)
         {
-            storage.set_raw(&key, &bytes).await;
-            set_mtime(&storage, &key).await;
+            // Only stamp freshness after the data write succeeded — a fresh
+            // mtime over a missing body would serve 10 minutes of empty hits.
+            match storage.set_raw(&key, &bytes).await {
+                Ok(()) => set_mtime(&storage, &key).await,
+                Err(e) => tracing::warn!("Failed to refresh registry cache {key}: {e}"),
+            }
         }
     })
     .await;
@@ -95,8 +102,13 @@ where
     if let Some(data) = storage.get_raw(key).await
         && let Ok(stale) = serde_json::from_slice::<T>(&data)
     {
-        let refresh = refresh_cached_json(storage.clone(), key.to_string(), ttl_secs, fetch);
-        tokio::spawn(refresh);
+        // Skip the detached refresh when one is already in flight; spawning
+        // another follower task per request would only pile up waiters under
+        // a hot key while the leader is slow.
+        if !crate::utils::singleflight::is_pending(key) {
+            let refresh = refresh_cached_json(storage.clone(), key.to_string(), ttl_secs, fetch);
+            tokio::spawn(refresh);
+        }
         return Ok(stale);
     }
 
@@ -120,8 +132,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let storage: SharedStorage = Arc::new(FsStorage::new(tmp.path().to_str().unwrap()));
         let key = "test-stale-json";
-        storage.set_raw(key, br#""old""#).await;
-        storage
+        let _ = storage.set_raw(key, br#""old""#).await;
+        let _ = storage
             .set_meta(
                 key,
                 &CacheMeta {

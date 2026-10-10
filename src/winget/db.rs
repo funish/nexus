@@ -245,7 +245,7 @@ async fn build_and_persist_index(
     })
     .await??;
 
-    storage.set_raw(WINGET_SEARCH_INDEX_KEY, &bytes).await;
+    storage.set_raw(WINGET_SEARCH_INDEX_KEY, &bytes).await?;
     storage
         .set_meta(
             WINGET_SEARCH_INDEX_KEY,
@@ -258,7 +258,7 @@ async fn build_and_persist_index(
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
     Ok(entries)
 }
 
@@ -294,7 +294,9 @@ async fn load_index_db_from_storage(
                 .extra
                 .insert("etag".to_string(), Value::String(etag.clone()));
         }
-        storage.set_meta(index_db_key().as_str(), &next_meta).await;
+        storage
+            .set_meta(index_db_key().as_str(), &next_meta)
+            .await?;
         hashed
     };
 
@@ -348,6 +350,12 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
         headers.push(("If-None-Match", etag.as_str()));
     }
 
+    // The ~100MB+ msix download competes with all other outbound fetches; hold a
+    // download slot for the whole transfer so it cannot run alongside 50 others.
+    let _permit = crate::utils::concurrency::DOWNLOAD_SEMAPHORE
+        .acquire()
+        .await
+        .unwrap();
     let resp = crate::utils::http::get_with_retry(
         crate::config::winget_source_msix_url(),
         Duration::from_secs(120),
@@ -358,7 +366,7 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let meta = checked_meta(old_meta, etag.as_deref(), None);
-        storage.set_meta(index_db_key().as_str(), &meta).await;
+        storage.set_meta(index_db_key().as_str(), &meta).await?;
         if let Some(mut cached) = current_cached(db) {
             cached.checked_at = now_secs()?;
             store_cached(db, cached);
@@ -384,7 +392,8 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
 
     let bytes = resp.bytes().await?;
     let (data, db_hash) = tokio::task::spawn_blocking(move || {
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec()))?;
+        // Cursor<Bytes> implements Read+Seek, avoiding a full-archive copy.
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
         let mut file = archive.by_name("Public/index.db")?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
@@ -397,7 +406,7 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
 
     // Persist before moving `data` into the snapshot loader — avoids cloning the
     // multi-MB database just to hand one copy to each of storage and SQLite.
-    storage.set_raw(index_db_key().as_str(), &data).await;
+    storage.set_raw(index_db_key().as_str(), &data).await?;
     let database = prepare_database(data, search_index.is_none()).await?;
     let search_index = if let Some(index) = search_index {
         index
@@ -411,7 +420,7 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
             .insert("source_version".to_string(), Value::String(source_version));
     }
     let meta = checked_meta(meta, etag.as_deref(), Some(&db_hash));
-    storage.set_meta(index_db_key().as_str(), &meta).await;
+    storage.set_meta(index_db_key().as_str(), &meta).await?;
 
     let cached = CachedDb {
         database: database.clone(),

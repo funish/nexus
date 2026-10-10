@@ -117,6 +117,7 @@ async fn fetch_part(
             &format!("{cache_base}/{filepath}"),
             None,
             None,
+            None,
         )
         .await
         .map_err(|e| AppError::bad_gateway(e.to_string()))?;
@@ -154,6 +155,7 @@ async fn fetch_part(
             filepath,
             &format!("{cache_base}/{filepath}"),
             Some(&raw_url),
+            None,
             None,
         )
         .await

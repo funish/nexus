@@ -393,17 +393,18 @@ pub async fn handle_package_manifest(
     // order from load_versions survives the fan-out. Build errors are kept, not
     // flattened away — a package whose every version fails to build answers 502
     // rather than a silent 200 with no versions.
-    let entries: Vec<anyhow::Result<Option<VersionManifest>>> = stream::iter(versions.iter().cloned())
-        .map(|version| {
-            // Each build task needs its own handles: `map` is FnMut, so the captured
-            // Arc/String can't move into every future — clone per iteration instead.
-            let storage = storage.clone();
-            let package_id = package_id.clone();
-            async move { build_version_manifest(&storage, &package_id, &version).await }
-        })
-        .buffered(WINGET_MANIFEST_BUILD_CONCURRENCY)
-        .collect()
-        .await;
+    let entries: Vec<anyhow::Result<Option<VersionManifest>>> =
+        stream::iter(versions.iter().cloned())
+            .map(|version| {
+                // Each build task needs its own handles: `map` is FnMut, so the captured
+                // Arc/String can't move into every future — clone per iteration instead.
+                let storage = storage.clone();
+                let package_id = package_id.clone();
+                async move { build_version_manifest(&storage, &package_id, &version).await }
+            })
+            .buffered(WINGET_MANIFEST_BUILD_CONCURRENCY)
+            .collect()
+            .await;
 
     let mut manifest_versions: Vec<VersionManifest> = Vec::with_capacity(entries.len());
     let mut build_failures = 0usize;

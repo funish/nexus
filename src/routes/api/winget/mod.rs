@@ -8,21 +8,11 @@ pub fn router() -> axum::Router<crate::AppState> {
     axum::Router::new()
         .route(
             "/api/winget/manifestSearch",
-            get(catalog::handle_manifest_search_get)
-                .post(catalog::handle_manifest_search_post),
+            get(catalog::handle_manifest_search_get).post(catalog::handle_manifest_search_post),
         )
-        .route(
-            "/api/winget/packages",
-            get(catalog::handle_packages),
-        )
-        .route(
-            "/api/winget/information",
-            get(catalog::handle_information),
-        )
-        .route(
-            "/api/winget/packages/{id}",
-            get(catalog::handle_package),
-        )
+        .route("/api/winget/packages", get(catalog::handle_packages))
+        .route("/api/winget/information", get(catalog::handle_information))
+        .route("/api/winget/packages/{id}", get(catalog::handle_package))
         .route(
             "/api/winget/packages/{id}/versions",
             get(manifests::handle_versions),

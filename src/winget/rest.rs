@@ -42,6 +42,9 @@ pub enum PackageMatchField {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct SearchRequestMatch {
+    // The spec (and winget client) spell this `Key`; the legacy REST source
+    // implementation used `KeyWord`. Accept both, preferring `Key`.
+    #[serde(alias = "Key")]
     pub key_word: Option<String>,
     pub match_type: Option<MatchType>,
     #[allow(dead_code)]

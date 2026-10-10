@@ -61,10 +61,15 @@ impl Storage for S3Storage {
         }
     }
 
-    async fn set_raw(&self, key: &str, data: &[u8]) {
-        if let Err(e) = self.bucket.put_object(key, data).await {
-            error!("S3 put_raw failed for {key}: {e:?}");
-        }
+    async fn set_raw(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.bucket
+            .put_object(key, data)
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                error!("S3 put_raw failed for {key}: {e:?}");
+                anyhow::anyhow!("S3 put_raw failed for {key}: {e:?}")
+            })
     }
 
     async fn get_meta(&self, key: &str) -> Option<CacheMeta> {
@@ -74,10 +79,9 @@ impl Storage for S3Storage {
         serde_json::from_slice(&data).ok()
     }
 
-    async fn set_meta(&self, key: &str, meta: &CacheMeta) {
+    async fn set_meta(&self, key: &str, meta: &CacheMeta) -> anyhow::Result<()> {
         let meta_key = format!("{key}$");
-        if let Ok(data) = serde_json::to_vec(meta) {
-            self.set_raw(&meta_key, &data).await;
-        }
+        let data = serde_json::to_vec(meta)?;
+        self.set_raw(&meta_key, &data).await
     }
 }

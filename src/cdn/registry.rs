@@ -35,7 +35,13 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         META_CACHE_TTL_SECS,
         async move {
             let url = format!("{}/{package_name}", npm_registry());
-            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[("Accept", NPM_ABBREVIATED_ACCEPT)]).await?;
+            let resp = get_with_retry(
+                &url,
+                FETCH_TIMEOUT,
+                None,
+                &[("Accept", NPM_ABBREVIATED_ACCEPT)],
+            )
+            .await?;
             let status = resp.status();
             if !status.is_success() {
                 if status.as_u16() == 404 {

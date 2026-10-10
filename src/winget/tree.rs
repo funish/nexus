@@ -36,6 +36,8 @@ struct TreeResponse {
     #[allow(dead_code)]
     sha: String,
     tree: Vec<TreeItem>,
+    #[serde(default)]
+    truncated: bool,
 }
 
 /// Fetch a GitHub tree by SHA or branch (mirrors getGitHubTree). Goes through
@@ -58,7 +60,13 @@ async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse
     if !resp.status().is_success() {
         anyhow::bail!("Failed to fetch GitHub tree: {}", resp.status());
     }
-    Ok(resp.json().await?)
+    let tree: TreeResponse = resp.json().await?;
+    if tree.truncated {
+        anyhow::bail!(
+            "GitHub tree {tree_sha} is truncated; refusing to cache an incomplete listing"
+        );
+    }
+    Ok(tree)
 }
 
 /// Refresh a tree-cache entry through single-flight. Concurrent refreshes for
@@ -81,8 +89,10 @@ where
         if let Ok(v) = fetch.await
             && let Ok(bytes) = serde_json::to_vec(&v)
         {
-            storage.set_raw(&key, &bytes).await;
-            set_mtime(&storage, &key).await;
+            match storage.set_raw(&key, &bytes).await {
+                Ok(()) => set_mtime(&storage, &key).await,
+                Err(e) => tracing::warn!("Failed to refresh tree cache {key}: {e}"),
+            }
         }
     })
     .await;
@@ -107,9 +117,11 @@ where
     if let Some(data) = storage.get_raw(key).await
         && let Ok(stale) = serde_json::from_slice::<T>(&data)
     {
-        let storage = storage.clone();
-        let key = key.to_string();
-        tokio::spawn(refresh_singleflight(storage, key, fetch));
+        if !crate::utils::singleflight::is_pending(key) {
+            let storage = storage.clone();
+            let key = key.to_string();
+            tokio::spawn(refresh_singleflight(storage, key, fetch));
+        }
         return Ok(stale);
     }
 
@@ -121,16 +133,59 @@ where
         .ok_or_else(|| anyhow::anyhow!("github tree cache miss after single-flight: {key}"))
 }
 
-/// Cached, recursive tree file paths (mirrors getGitHubTreePaths).
-pub async fn get_github_tree_paths(
-    storage: &SharedStorage,
-    tree_sha: &str,
-    cache_suffix: &str,
-) -> Result<Vec<String>> {
-    let normalized = cache_suffix.replace('/', "-");
-    let cache_key = format!("{}/{normalized}", crate::winget::constants::cache_prefix());
+/// Immortal cache for content-addressed (SHA-keyed) trees: a stored value is
+/// trusted forever because the key IS the content. Corrupt entries are refetched
+/// instead of failing forever. No TTL, no mtime — unlike branch aliases, a SHA
+/// never changes, so refreshing would only burn GitHub API budget.
+async fn cached_immutable<T, F>(storage: &SharedStorage, key: &str, fetch: F) -> Result<T>
+where
+    T: serde::Serialize + DeserializeOwned + Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    if let Some(data) = storage.get_raw(key).await
+        && let Ok(v) = serde_json::from_slice::<T>(&data)
+    {
+        return Ok(v);
+    }
+
+    let run_key = key.to_string();
+    let fetch_storage = storage.clone();
+    let cache_key = key.to_string();
+    crate::utils::singleflight::run_once(&run_key, move || async move {
+        // Re-check: another waiter may have populated the entry while this one
+        // was acquiring leadership.
+        if let Some(data) = fetch_storage.get_raw(&cache_key).await
+            && serde_json::from_slice::<T>(&data).is_ok()
+        {
+            return;
+        }
+        if let Ok(v) = fetch.await
+            && let Ok(bytes) = serde_json::to_vec(&v)
+            && let Err(e) = fetch_storage.set_raw(&cache_key, &bytes).await
+        {
+            tracing::warn!("Failed to cache immutable tree {cache_key}: {e}");
+        }
+    })
+    .await;
+
+    storage
+        .get_raw(key)
+        .await
+        .and_then(|data| serde_json::from_slice::<T>(&data).ok())
+        .ok_or_else(|| anyhow::anyhow!("immutable tree cache miss after single-flight: {key}"))
+}
+
+/// Cached, recursive tree file paths (mirrors getGitHubTreePaths). `tree_sha`
+/// is content-addressed, so the cache key is the SHA itself and entries never
+/// expire — only the branch-alias refreshes above burn API budget.
+pub async fn get_github_tree_paths(storage: &SharedStorage, tree_sha: &str) -> Result<Vec<String>> {
+    let cache_key = format!(
+        "{}/tree-paths/{}.json",
+        crate::winget::constants::cache_prefix(),
+        tree_sha
+    );
     let tree_sha = tree_sha.to_string();
-    cached_singleflight(storage, &cache_key, async move {
+    cached_immutable(storage, &cache_key, async move {
         let tree = get_github_tree(&tree_sha, true).await?;
         Ok(tree.tree.into_iter().map(|i| i.path).collect())
     })
@@ -139,13 +194,16 @@ pub async fn get_github_tree_paths(
 
 /// Cached letter-directory SHAs (a-z, 0-9) under manifests/ (mirrors getLetterDirectoryShas).
 pub async fn get_letter_directory_shas(storage: &SharedStorage) -> Result<HashMap<String, String>> {
+    // Resolve the branch alias first (TTL'd), then cache the letter map under
+    // the immutable manifests SHA — as long as manifests/ doesn't change, the
+    // letter tree is never re-requested.
+    let manifests_sha = fetch_manifests_sha(storage).await?;
     let cache_key = format!(
-        "{}/letter-shas.json",
-        crate::winget::constants::cache_prefix()
+        "{}/letter-shas/{}.json",
+        crate::winget::constants::cache_prefix(),
+        manifests_sha
     );
-    let fetch_storage = storage.clone();
-    cached_singleflight(storage, &cache_key, async move {
-        let manifests_sha = fetch_manifests_sha(&fetch_storage).await?;
+    cached_immutable(storage, &cache_key, async move {
         let tree = get_github_tree(&manifests_sha, false).await?;
         let mut shas = HashMap::new();
         for item in &tree.tree {
@@ -195,8 +253,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let storage: SharedStorage = Arc::new(FsStorage::new(tmp.path().to_str().unwrap()));
         let key = format!("{}/test-stale", crate::winget::constants::cache_prefix());
-        storage.set_raw(&key, br#""old""#).await;
-        storage
+        let _ = storage.set_raw(&key, br#""old""#).await;
+        let _ = storage
             .set_meta(
                 &key,
                 &CacheMeta {

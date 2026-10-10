@@ -9,9 +9,9 @@ use crate::storage::SharedStorage;
 use crate::winget::db::{SharedDb, get_index_db, get_search_index};
 use crate::winget::queries::package_exists;
 use crate::winget::rest::{
-    InformationData, InformationResponse, ManifestSearchRequest,
-    ManifestSearchResponse, MatchType, PackageIdentifierItem, PackageMatchFilter,
-    PackageSingleResponse, PackagesResponse, json_ok, winget_error,
+    InformationData, InformationResponse, ManifestSearchRequest, ManifestSearchResponse, MatchType,
+    PackageIdentifierItem, PackageMatchFilter, PackageSingleResponse, PackagesResponse, json_ok,
+    winget_error,
 };
 use crate::winget::search::{SearchResult, search_packages};
 use crate::winget::token::{decode_continuation_token, encode_continuation_token};

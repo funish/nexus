@@ -104,8 +104,10 @@ pub async fn fetch_manifest_content(
         .await
         {
             Ok(resp) if resp.status().is_success() => {
-                if let Ok(content) = resp.text().await {
-                    storage_c.set_raw(&key_c, content.as_bytes()).await;
+                if let Ok(content) = resp.text().await
+                    && let Err(e) = storage_c.set_raw(&key_c, content.as_bytes()).await
+                {
+                    tracing::warn!("Failed to cache WinGet manifest {path_c}: {e}");
                 }
             }
             Ok(resp) => tracing::warn!(
@@ -149,7 +151,7 @@ pub async fn get_version_manifests(
         return Ok(vec![]);
     };
 
-    let paths = get_github_tree_paths(storage, sha, &format!("manifests/{letter}")).await?;
+    let paths = get_github_tree_paths(storage, sha).await?;
 
     let publisher = parts[0];
     let name = parts[1..].join("/");
@@ -187,13 +189,15 @@ pub async fn build_version_manifest(
     if let Some(bytes) = storage.get_raw(&cache_key).await
         && let Ok(stale) = serde_json::from_slice::<VersionManifest>(&bytes)
     {
-        let refresh = version_manifest_refresher(
-            storage.clone(),
-            cache_key,
-            package_id.to_string(),
-            version.to_string(),
-        );
-        tokio::spawn(refresh);
+        if !crate::utils::singleflight::is_pending(&cache_key) {
+            let refresh = version_manifest_refresher(
+                storage.clone(),
+                cache_key,
+                package_id.to_string(),
+                version.to_string(),
+            );
+            tokio::spawn(refresh);
+        }
         return Ok(Some(stale));
     }
 
@@ -331,8 +335,10 @@ async fn rebuild_version_manifest(
     // Cache only a non-degenerate result (any_fetched is false only when every
     // file fetch failed); a cache write failure is otherwise non-fatal.
     if any_fetched && let Ok(bytes) = serde_json::to_vec(&entry) {
-        storage.set_raw(&cache_key, &bytes).await;
-        set_mtime(storage, &cache_key).await;
+        match storage.set_raw(&cache_key, &bytes).await {
+            Ok(()) => set_mtime(storage, &cache_key).await,
+            Err(e) => tracing::warn!("Failed to cache version manifest {cache_key}: {e}"),
+        }
     }
 
     Ok(Some(entry))

@@ -15,8 +15,5 @@ pub fn router() -> axum::Router<crate::AppState> {
         .route("/cdn/gh/{*path}", get(gh::handle_gh))
         .route("/cdn/cdnjs/{*path}", get(cdnjs::handle_cdnjs))
         .route("/cdn/wp/{*path}", get(wp::handle_wp))
-        .route(
-            "/cdn/combine/{*paths}",
-            get(combine::handle_combine),
-        )
+        .route("/cdn/combine/{*paths}", get(combine::handle_combine))
 }

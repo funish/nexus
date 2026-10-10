@@ -94,6 +94,18 @@ pub fn minify_for(filename: &str, code: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Run `minify_for` on tokio's blocking pool. Parse/minify/codegen is CPU-bound
+/// and can take hundreds of milliseconds on multi-MB files; running it inline in
+/// an async handler would stall the worker thread and queue unrelated requests
+/// behind it. Fail-open on task panic, same contract as `minify_for`.
+pub async fn minify_blocking(filename: &str, code: &[u8]) -> Vec<u8> {
+    let name = filename.to_string();
+    let data = code.to_vec();
+    tokio::task::spawn_blocking(move || minify_for(&name, &data))
+        .await
+        .unwrap_or_else(|_| code.to_vec())
+}
+
 /// Return the always-minified bytes for a default/entry file, caching the result
 /// under a "+min/" key so the oxc/lightningcss pass runs only once. jsDelivr serves
 /// the default file always-minified; npm, jsr and cdnjs share this path. Non-minifiable
@@ -108,13 +120,25 @@ pub async fn minified_entry(
     if let Some(cached) = storage.get_raw(&min_key).await {
         return cached;
     }
-    let minified = minify_for(entry_file, original);
+    // Single-flight so a cold burst of the same entry minifies once; the leader
+    // writes the derived cache synchronously before returning, so followers'
+    // re-read (and the leader's own fallback) see the stored value.
+    let run_key = min_key.clone();
+    let cache_key = min_key.clone();
     let s = storage.clone();
-    let (k, d) = (min_key, minified.clone());
-    tokio::spawn(async move {
-        s.set_raw(&k, &d).await;
-    });
-    minified
+    let name = entry_file.to_string();
+    let data = original.to_vec();
+    crate::utils::singleflight::run_once(&run_key, move || async move {
+        let minified = minify_blocking(&name, &data).await;
+        if let Err(e) = s.set_raw(&cache_key, &minified).await {
+            tracing::warn!("Failed to cache minified entry {cache_key}: {e}");
+        }
+    })
+    .await;
+    storage
+        .get_raw(&min_key)
+        .await
+        .unwrap_or_else(|| minify_for(entry_file, original))
 }
 
 /// If `path` ends with `.min.js`/`.min.css`, return the un-minified variant
@@ -152,6 +176,7 @@ pub async fn try_min_synthesis(
     cache_control: &'static str,
     raw_url_base: Option<&str>,
     resolved_version: Option<&str>,
+    ttl_secs: Option<i64>,
 ) -> Result<Option<axum::response::Response>, crate::error::AppError> {
     // Only `.min.{js,css}` paths are synthesizable; otherwise the caller proceeds.
     let Some(orig) = strip_min_suffix(filepath) else {
@@ -166,18 +191,21 @@ pub async fn try_min_synthesis(
         &format!("{cache_base}/{orig}"),
         direct_url.as_deref(),
         None,
+        ttl_secs,
     )
     .await
     {
         Ok(data) => data,
         Err(_) => return Ok(None),
     };
-    let minified = minify_for(&orig, &orig_data);
+    let minified = minify_blocking(&orig, &orig_data).await;
     // Cache the synthesized .min file so later requests hit storage directly.
     let s = storage.clone();
     let (k, d) = (format!("{cache_base}/{filepath}"), minified.clone());
     tokio::spawn(async move {
-        s.set_raw(&k, &d).await;
+        if let Err(e) = s.set_raw(&k, &d).await {
+            tracing::warn!("Failed to cache synthesized {k}: {e}");
+        }
     });
     let resp = match resolved_version {
         Some(v) => crate::cdn::response::file_response_versioned(
@@ -188,13 +216,9 @@ pub async fn try_min_synthesis(
             v,
             None,
         ),
-        None => crate::cdn::response::file_response(
-            filepath,
-            &minified,
-            cache_control,
-            headers,
-            None,
-        ),
+        None => {
+            crate::cdn::response::file_response(filepath, &minified, cache_control, headers, None)
+        }
     };
     Ok(Some(resp))
 }
@@ -250,10 +274,9 @@ mod tests {
         // A non-`.min` path short-circuits to Ok(None) before any storage or network
         // access, so an unreachable tarball URL proves no fetch happened.
         let tmp = tempfile::tempdir().unwrap();
-        let storage: crate::storage::SharedStorage =
-            std::sync::Arc::new(crate::storage::fs::FsStorage::new(
-                tmp.path().to_str().unwrap(),
-            ));
+        let storage: crate::storage::SharedStorage = std::sync::Arc::new(
+            crate::storage::fs::FsStorage::new(tmp.path().to_str().unwrap()),
+        );
         let headers = axum::http::HeaderMap::new();
         let resp = try_min_synthesis(
             &storage,
@@ -262,6 +285,7 @@ mod tests {
             "foo.js",
             &headers,
             "public, max-age=60",
+            None,
             None,
             None,
         )

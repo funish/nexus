@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 use crate::cdn::constants::*;
 use crate::cdn::listing::{CdnPackageListing, get_directory_listing};
-use crate::cdn::minify::minify_for;
+use crate::cdn::minify::minified_entry;
 use crate::cdn::registry::fetch_github_tags;
 use crate::cdn::resolve::resolve_from_tags;
 use crate::cdn::response::file_response;
@@ -50,6 +50,9 @@ struct GhCtx<'a> {
     cached_meta: &'a Option<CacheMeta>,
     is_cached: bool,
     warm: Option<(&'a str, &'a str)>,
+    /// Raw-cache TTL for mutable refs (branch names, semver tags that can be
+    /// re-pointed). Commit hashes are immutable and use `None`.
+    raw_ttl: Option<i64>,
 }
 
 fn parse_gh_path(path: &str) -> Result<ParsedGhPath, AppError> {
@@ -123,12 +126,12 @@ pub async fn handle_gh(
     let (resolved_version, is_semver) = resolve_gh_version(&tags, &version_req);
 
     // Full commit hash -> raw archive; semver -> tag ref; otherwise -> branch ref.
-    let is_hash = resolved_version.len() == 40
-        && resolved_version.chars().all(|c| c.is_ascii_hexdigit());
+    let is_hash =
+        resolved_version.len() == 40 && resolved_version.chars().all(|c| c.is_ascii_hexdigit());
     let tarball_url = build_gh_tarball_url(&owner, &repo, &resolved_version, is_hash, is_semver);
 
     let cache_base = format!("cdn/gh/{owner}/{repo}/{resolved_version}");
-    let cached_meta = is_package_cached(&storage, &cache_base, is_semver).await;
+    let cached_meta = is_package_cached(&storage, &cache_base).await;
     let is_cached = cached_meta.is_some();
     // jsDelivr 3-tier cache: exact version/commit hash -> 1yr (immutable);
     // range/latest alias -> 7d; branch ref -> 12h.
@@ -148,6 +151,11 @@ pub async fn handle_gh(
     // case (no bytes to reuse then); the PENDING dedup in cache_package_* ensures at
     // most one tarball download across both spawns.
     let warm = (!is_cached).then_some((cache_base.as_str(), cache_label.as_str()));
+    let raw_ttl = if is_hash {
+        None
+    } else {
+        Some(crate::cdn::constants::CDN_MUTABLE_REF_TTL_SECS)
+    };
 
     let ctx = GhCtx {
         storage: &storage,
@@ -163,6 +171,7 @@ pub async fn handle_gh(
         cached_meta: &cached_meta,
         is_cached,
         warm,
+        raw_ttl,
     };
 
     if filepath.is_empty() {
@@ -224,6 +233,7 @@ async fn serve_gh_root(ctx: &GhCtx<'_>, has_trailing_slash: bool) -> Result<Resp
         &readme_key,
         Some(&readme_url),
         ctx.warm,
+        ctx.raw_ttl,
     )
     .await
     {
@@ -252,6 +262,7 @@ async fn serve_gh_root(ctx: &GhCtx<'_>, has_trailing_slash: bool) -> Result<Resp
         &index_key,
         Some(&index_url),
         ctx.warm,
+        ctx.raw_ttl,
     )
     .await
     {
@@ -264,8 +275,9 @@ async fn serve_gh_root(ctx: &GhCtx<'_>, has_trailing_slash: bool) -> Result<Resp
                 ctx.is_cached,
             );
             // jsDelivr: the default file is always minified. README above is markdown
-            // (minify_for passes it through); index.js is real JS — minify it.
-            let data = minify_for("index.js", &data);
+            // (minify_for passes it through); index.js is real JS — minify it and
+            // persist the derived `+min` result like npm/jsr/cdnjs do.
+            let data = minified_entry(ctx.storage, ctx.cache_base, "index.js", &data).await;
             Ok(file_response(
                 "index.js",
                 &data,
@@ -290,6 +302,7 @@ async fn serve_gh_subpath(ctx: &GhCtx<'_>) -> Result<Response, AppError> {
         &format!("{}/{}", ctx.cache_base, ctx.filepath),
         Some(&file_url),
         ctx.warm,
+        ctx.raw_ttl,
     )
     .await
     {
@@ -330,6 +343,7 @@ async fn serve_gh_subpath(ctx: &GhCtx<'_>) -> Result<Response, AppError> {
                 ctx.cache_control,
                 Some(ctx.raw_base),
                 None,
+                ctx.raw_ttl,
             )
             .await?
             {

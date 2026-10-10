@@ -191,10 +191,35 @@ where
         .ok_or_else(|| anyhow::anyhow!("immutable tree cache miss after single-flight: {key}"))
 }
 
-/// Cached, recursive tree file paths (mirrors getGitHubTreePaths). `tree_sha`
-/// is content-addressed, so the cache key is the SHA itself and entries never
-/// expire — only the branch-alias refreshes above burn API budget.
-pub async fn get_github_tree_paths(storage: &SharedStorage, tree_sha: &str) -> Result<Vec<String>> {
+/// Cached child path-to-SHA entries for one Git tree level. `tree_sha`
+/// is content-addressed, so entries never expire; only branch aliases refresh.
+pub(super) async fn get_github_tree_entries(
+    storage: &SharedStorage,
+    tree_sha: &str,
+) -> Result<HashMap<String, String>> {
+    let cache_key = format!(
+        "{}/tree-entries/{}.json",
+        crate::winget::constants::cache_prefix(),
+        tree_sha
+    );
+    let tree_sha = tree_sha.to_string();
+    cached_immutable(storage, &cache_key, async move {
+        let tree = get_github_tree(&tree_sha, false).await?;
+        Ok(tree
+            .tree
+            .into_iter()
+            .map(|item| (item.path, item.sha))
+            .collect())
+    })
+    .await
+}
+
+/// Cached recursive paths for one narrowly scoped subtree (for example a single
+/// WinGet package). This stays far below GitHub's 100,000-entry recursive limit.
+pub(super) async fn get_github_tree_paths(
+    storage: &SharedStorage,
+    tree_sha: &str,
+) -> Result<Vec<String>> {
     let cache_key = format!(
         "{}/tree-paths/{}.json",
         crate::winget::constants::cache_prefix(),
@@ -203,7 +228,7 @@ pub async fn get_github_tree_paths(storage: &SharedStorage, tree_sha: &str) -> R
     let tree_sha = tree_sha.to_string();
     cached_immutable(storage, &cache_key, async move {
         let tree = get_github_tree(&tree_sha, true).await?;
-        Ok(tree.tree.into_iter().map(|i| i.path).collect())
+        Ok(tree.tree.into_iter().map(|item| item.path).collect())
     })
     .await
 }
@@ -219,15 +244,13 @@ pub async fn get_letter_directory_shas(storage: &SharedStorage) -> Result<HashMa
         crate::winget::constants::cache_prefix(),
         manifests_sha
     );
+    let entries_storage = storage.clone();
     cached_immutable(storage, &cache_key, async move {
-        let tree = get_github_tree(&manifests_sha, false).await?;
+        let entries = get_github_tree_entries(&entries_storage, &manifests_sha).await?;
         let mut shas = HashMap::new();
-        for item in &tree.tree {
-            if item.item_type == "tree"
-                && item.path.len() == 1
-                && item.path.chars().all(|c| c.is_ascii_alphanumeric())
-            {
-                shas.insert(item.path.clone(), item.sha.clone());
+        for (path, sha) in entries {
+            if path.len() == 1 && path.chars().all(|c| c.is_ascii_alphanumeric()) {
+                shas.insert(path, sha);
             }
         }
         if shas.is_empty() {

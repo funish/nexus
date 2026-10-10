@@ -20,7 +20,7 @@ use crate::utils::singleflight::run_once;
 
 use super::constants::*;
 use super::rest::VersionManifest;
-use super::tree::{get_github_tree_paths, get_letter_directory_shas};
+use super::tree::{get_github_tree_entries, get_github_tree_paths, get_letter_directory_shas};
 
 static LOCALE_FILE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\.locale\.[^.]+\.yaml$").unwrap());
@@ -155,16 +155,25 @@ pub async fn get_version_manifests(
         return Ok(vec![]);
     };
 
-    let paths = get_github_tree_paths(storage, sha).await?;
-
     let publisher = parts[0];
     let name = parts[1..].join("/");
-    let prefix = format!("{publisher}/{name}/{version}/");
+    let letter_entries = get_github_tree_entries(storage, sha).await?;
+    let Some(publisher_sha) = letter_entries.get(publisher) else {
+        return Ok(vec![]);
+    };
+
+    let publisher_entries = get_github_tree_entries(storage, publisher_sha).await?;
+    let Some(package_sha) = publisher_entries.get(name.as_str()) else {
+        return Ok(vec![]);
+    };
+
+    let paths = get_github_tree_paths(storage, package_sha).await?;
+    let prefix = format!("{version}/");
 
     Ok(paths
-        .iter()
-        .filter(|p| p.starts_with(&prefix) && p.ends_with(".yaml"))
-        .map(|p| format!("manifests/{letter}/{p}"))
+        .into_iter()
+        .filter(|path| path.starts_with(&prefix) && path.ends_with(".yaml"))
+        .map(|path| format!("manifests/{letter}/{publisher}/{name}/{path}"))
         .collect())
 }
 

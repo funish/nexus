@@ -6,9 +6,10 @@ use serde_json::Value;
 use super::constants::{
     CDN_FETCH_TIMEOUT_SECS, cdnjs_api_base, github_api_base, jsr_registry, npm_registry,
 };
+use crate::cdn::constants::CDN_MAX_PACKAGE_SIZE;
 use crate::storage::SharedStorage;
 use crate::utils::cache::{META_CACHE_TTL_SECS, cached_json};
-use crate::utils::http::{GITHUB_TOKEN, get_with_retry};
+use crate::utils::http::{GITHUB_TOKEN, get_fetched_with_retry};
 
 /// Per-request timeout for registry metadata fetches.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(CDN_FETCH_TIMEOUT_SECS);
@@ -35,14 +36,15 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
         META_CACHE_TTL_SECS,
         async move {
             let url = format!("{}/{package_name}", npm_registry());
-            let resp = get_with_retry(
+            let resp = get_fetched_with_retry(
                 &url,
                 FETCH_TIMEOUT,
                 None,
                 &[("Accept", NPM_ABBREVIATED_ACCEPT)],
+                CDN_MAX_PACKAGE_SIZE,
             )
             .await?;
-            let status = resp.status();
+            let status = resp.status;
             if !status.is_success() {
                 if status.as_u16() == 404 {
                     anyhow::bail!("Package not found: {package_name}");
@@ -50,7 +52,7 @@ pub async fn fetch_npm_metadata(storage: &SharedStorage, package_name: &str) -> 
                 tracing::warn!("npm registry upstream error: HTTP {status} for {package_name}");
                 return Err(RegistryUpstreamError(status.as_u16()).into());
             }
-            Ok(resp.json::<Value>().await?)
+            Ok(serde_json::from_slice::<Value>(&resp.body)?)
         },
     )
     .await
@@ -70,11 +72,12 @@ pub async fn fetch_jsr_metadata(
         async move {
             let npm_name = format!("@jsr/{}__{}", scope, package);
             let url = format!("{}/{npm_name}", jsr_registry());
-            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
-            if !resp.status().is_success() {
+            let resp = get_fetched_with_retry(&url, FETCH_TIMEOUT, None, &[], CDN_MAX_PACKAGE_SIZE)
+                .await?;
+            if !resp.status.is_success() {
                 anyhow::bail!("JSR package not found: @{scope}/{package}");
             }
-            Ok(resp.json::<Value>().await?)
+            Ok(serde_json::from_slice::<Value>(&resp.body)?)
         },
     )
     .await
@@ -106,17 +109,18 @@ pub async fn fetch_github_tags(
                 .acquire()
                 .await
                 .unwrap();
-            let resp = get_with_retry(
+            let resp = get_fetched_with_retry(
                 &url,
                 FETCH_TIMEOUT,
                 GITHUB_TOKEN.as_deref(),
                 &[("Accept", "application/vnd.github+json")],
+                CDN_MAX_PACKAGE_SIZE,
             )
             .await?;
-            if !resp.status().is_success() {
+            if !resp.status.is_success() {
                 anyhow::bail!("GitHub repo not found: {owner}/{repo}");
             }
-            let data: Value = resp.json().await?;
+            let data: Value = serde_json::from_slice(&resp.body)?;
             Ok::<Vec<String>, anyhow::Error>(
                 data.as_array()
                     .map(|arr| {
@@ -142,11 +146,12 @@ pub async fn fetch_cdnjs_library(storage: &SharedStorage, library: &str) -> Resu
                 "{}/libraries/{library}?fields=version,versions,filename",
                 cdnjs_api_base()
             );
-            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
-            if !resp.status().is_success() {
+            let resp = get_fetched_with_retry(&url, FETCH_TIMEOUT, None, &[], CDN_MAX_PACKAGE_SIZE)
+                .await?;
+            if !resp.status.is_success() {
                 anyhow::bail!("cdnjs library not found: {library}");
             }
-            Ok(resp.json::<Value>().await?)
+            Ok(serde_json::from_slice::<Value>(&resp.body)?)
         },
     )
     .await
@@ -158,11 +163,11 @@ pub async fn fetch_cdnjs_files(library: &str, version: &str) -> Result<Value> {
         .await
         .unwrap();
     let url = format!("{}/libraries/{library}/{version}", cdnjs_api_base());
-    let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
-    if !resp.status().is_success() {
+    let resp = get_fetched_with_retry(&url, FETCH_TIMEOUT, None, &[], CDN_MAX_PACKAGE_SIZE).await?;
+    if !resp.status.is_success() {
         anyhow::bail!("cdnjs version not found: {library}@{version}");
     }
-    Ok(resp.json().await?)
+    Ok(serde_json::from_slice(&resp.body)?)
 }
 
 pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<Vec<String>> {
@@ -173,11 +178,12 @@ pub async fn fetch_org_packages(storage: &SharedStorage, scope: &str) -> Result<
         META_CACHE_TTL_SECS,
         async move {
             let url = format!("{}/-/org/{scope}/package", npm_registry());
-            let resp = get_with_retry(&url, FETCH_TIMEOUT, None, &[]).await?;
-            if !resp.status().is_success() {
+            let resp = get_fetched_with_retry(&url, FETCH_TIMEOUT, None, &[], CDN_MAX_PACKAGE_SIZE)
+                .await?;
+            if !resp.status.is_success() {
                 anyhow::bail!("Organization not found: @{scope}");
             }
-            let data: serde_json::Map<String, Value> = resp.json().await?;
+            let data: serde_json::Map<String, Value> = serde_json::from_slice(&resp.body)?;
             Ok::<Vec<String>, anyhow::Error>(data.keys().cloned().collect())
         },
     )

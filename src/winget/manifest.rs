@@ -12,6 +12,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 
+use crate::cdn::constants::CDN_MAX_PACKAGE_SIZE;
 use crate::storage::SharedStorage;
 use crate::utils::cache::{cache_fresh, set_mtime};
 use crate::utils::concurrency::DOWNLOAD_SEMAPHORE;
@@ -97,9 +98,17 @@ pub async fn fetch_manifest_content(
         let url = format!("{}/{path_c}", crate::winget::constants::github_raw_base());
         // raw.githubusercontent.com does not consume GitHub API credentials;
         // reserving the token for api.github.com avoids leaking it needlessly.
-        match crate::utils::http::get_with_retry(&url, Duration::from_secs(30), None, &[]).await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(content) = resp.text().await
+        match crate::utils::http::get_fetched_with_retry(
+            &url,
+            Duration::from_secs(30),
+            None,
+            &[],
+            CDN_MAX_PACKAGE_SIZE,
+        )
+        .await
+        {
+            Ok(resp) if resp.status.is_success() => {
+                if let Ok(content) = String::from_utf8(resp.body)
                     && let Err(e) = storage_c.set_raw(&key_c, content.as_bytes()).await
                 {
                     tracing::warn!("Failed to cache WinGet manifest {path_c}: {e}");
@@ -107,7 +116,7 @@ pub async fn fetch_manifest_content(
             }
             Ok(resp) => tracing::warn!(
                 "WinGet manifest fetch failed: HTTP {} for {path_c}",
-                resp.status()
+                resp.status
             ),
             Err(e) => tracing::warn!("WinGet manifest fetch failed for {path_c}: {e}"),
         }

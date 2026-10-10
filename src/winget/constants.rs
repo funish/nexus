@@ -46,3 +46,6 @@ pub const WINGET_LOCALES_PAGE_SIZE: usize = 25;
 
 /// Default locale used when a manifest omits one.
 pub const WINGET_DEFAULT_LOCALE: &str = "en-US";
+
+/// Hard cap for one source.msix archive; the public source is currently ~21 MB.
+pub const WINGET_MSIX_MAX_SIZE: u64 = 256 * 1024 * 1024;

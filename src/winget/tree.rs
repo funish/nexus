@@ -7,12 +7,14 @@
 //! which would burn the GitHub budget (60/h anonymous, 5000/h authenticated).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::cdn::constants::CDN_MAX_PACKAGE_SIZE;
 use crate::storage::SharedStorage;
 use crate::utils::cache::{cache_fresh, set_mtime};
 use crate::utils::concurrency::GITHUB_API_SEMAPHORE;
@@ -50,17 +52,18 @@ async fn get_github_tree(tree_sha: &str, recursive: bool) -> Result<TreeResponse
         crate::config::winget_github_repo(),
         if recursive { "?recursive=1" } else { "" }
     );
-    let resp = crate::utils::http::get_with_retry(
+    let resp = crate::utils::http::get_fetched_with_retry(
         &url,
         Duration::from_secs(30),
         crate::utils::http::GITHUB_TOKEN.as_deref(),
         &[],
+        CDN_MAX_PACKAGE_SIZE,
     )
     .await?;
-    if !resp.status().is_success() {
-        anyhow::bail!("Failed to fetch GitHub tree: {}", resp.status());
+    if !resp.status.is_success() {
+        anyhow::bail!("Failed to fetch GitHub tree: {}", resp.status);
     }
-    let tree: TreeResponse = resp.json().await?;
+    let tree: TreeResponse = serde_json::from_slice(&resp.body)?;
     if tree.truncated {
         anyhow::bail!(
             "GitHub tree {tree_sha} is truncated; refusing to cache an incomplete listing"
@@ -151,6 +154,8 @@ where
     let run_key = key.to_string();
     let fetch_storage = storage.clone();
     let cache_key = key.to_string();
+    let failure: Arc<Mutex<Option<Arc<anyhow::Error>>>> = Arc::default();
+    let run_failure = failure.clone();
     crate::utils::singleflight::run_once(&run_key, move || async move {
         // Re-check: another waiter may have populated the entry while this one
         // was acquiring leadership.
@@ -159,14 +164,25 @@ where
         {
             return;
         }
-        if let Ok(v) = fetch.await
-            && let Ok(bytes) = serde_json::to_vec(&v)
-            && let Err(e) = fetch_storage.set_raw(&cache_key, &bytes).await
-        {
-            tracing::warn!("Failed to cache immutable tree {cache_key}: {e}");
+        match fetch.await {
+            Ok(v) if let Ok(bytes) = serde_json::to_vec(&v) => {
+                if let Err(e) = fetch_storage.set_raw(&cache_key, &bytes).await {
+                    tracing::warn!("Failed to cache immutable tree {cache_key}: {e}");
+                }
+            }
+            Ok(_) => tracing::warn!("Failed to serialize immutable tree {cache_key}"),
+            Err(e) => {
+                let e = Arc::new(e);
+                *run_failure.lock().unwrap() = Some(e.clone());
+                tracing::warn!("Failed to fetch immutable tree {cache_key}: {e:#}");
+            }
         }
     })
     .await;
+
+    if let Some(e) = failure.lock().unwrap().as_ref() {
+        return Err(anyhow::anyhow!("immutable tree fetch failed: {e:#}"));
+    }
 
     storage
         .get_raw(key)
@@ -281,5 +297,23 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
         let refreshed = storage.get_raw(&key).await.unwrap();
         assert_eq!(refreshed, br#""new""#.to_vec());
+    }
+
+    #[tokio::test]
+    async fn immutable_fetch_failure_is_propagated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage: SharedStorage = Arc::new(FsStorage::new(tmp.path().to_str().unwrap()));
+        let key = format!(
+            "{}/test-immutable-miss",
+            crate::winget::constants::cache_prefix()
+        );
+
+        let error = cached_immutable::<String, _>(&storage, &key, async {
+            Err(anyhow::anyhow!("upstream unavailable"))
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("upstream unavailable"));
     }
 }

@@ -353,15 +353,16 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
         .acquire()
         .await
         .unwrap();
-    let resp = crate::utils::http::get_with_retry(
+    let resp = crate::utils::http::get_fetched_with_retry(
         crate::config::winget_source_msix_url(),
         Duration::from_secs(120),
         None,
         &headers,
+        crate::winget::constants::WINGET_MSIX_MAX_SIZE,
     )
     .await?;
 
-    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+    if resp.status == reqwest::StatusCode::NOT_MODIFIED {
         let meta = checked_meta(old_meta, etag.as_deref(), None);
         storage.set_meta(index_db_key().as_str(), &meta).await?;
         if let Some(mut cached) = current_cached(db) {
@@ -371,23 +372,23 @@ async fn refresh_upstream_index(db: &SharedDb, storage: &SharedStorage) -> Resul
         return Ok(RefreshOutcome::NotModified);
     }
 
-    if !resp.status().is_success() {
-        anyhow::bail!("Failed to download source.msix: {}", resp.status());
+    if !resp.status.is_success() {
+        anyhow::bail!("Failed to download source.msix: {}", resp.status);
     }
 
     // Never reuse an old ETag when the fresh response does not provide one.
     let etag = resp
-        .headers()
+        .headers
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let source_version = resp
-        .headers()
+        .headers
         .get("x-ms-meta-sourceversion")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let bytes = resp.bytes().await?;
+    let bytes = resp.body;
     let (data, db_hash) = tokio::task::spawn_blocking(move || {
         // Cursor<Bytes> implements Read+Seek, avoiding a full-archive copy.
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
